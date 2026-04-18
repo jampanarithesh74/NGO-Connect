@@ -56,5 +56,16 @@ service cloud.firestore {
                       request.resource.data.role == resource.data.role &&
                       request.resource.data.createdAt == resource.data.createdAt;
     }
+
+    match /reports/{reportId} {
+      function isNGO() {
+        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'ngo';
+      }
+      
+      allow read: if isAuthenticated() && (resource.data.ngoId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isNGO() && request.resource.data.ngoId == request.auth.uid;
+      allow update: if isAuthenticated() && isNGO() && resource.data.ngoId == request.auth.uid;
+      allow delete: if isAuthenticated() && isNGO() && resource.data.ngoId == request.auth.uid;
+    }
   }
 }

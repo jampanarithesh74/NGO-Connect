@@ -14,12 +14,30 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "email", "role"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "NGO report data and AI analysis",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ngoId": { "type": "string" },
+        "content": { "type": "string" },
+        "analysis": { "type": "object" },
+        "status": { "type": "string", "enum": ["pending", "in-progress", "completed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ngoId", "content", "status"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
       "description": "User profiles"
+    },
+    "/reports/{reportId}": {
+      "schema": "Report",
+      "description": "NGO reports and analysis"
     }
   }
 }

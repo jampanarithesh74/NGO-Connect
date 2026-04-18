@@ -1,5 +1,6 @@
 import { AuthProvider, useAuth } from './lib/AuthContext';
 import LoginPage from './components/LoginPage';
+import NGODashboard from './components/NGODashboard';
 import { Toaster } from '@/components/ui/sonner';
 import { Button } from '@/components/ui/button';
 import { auth } from './lib/firebase';
@@ -20,12 +21,16 @@ function AppContent() {
     return <LoginPage />;
   }
 
+  if (userRole === 'ngo') {
+    return <NGODashboard />;
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 p-8">
       <div className="max-w-4xl mx-auto space-y-8">
         <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-3xl font-bold">Dashboard</h1>
+            <h1 className="text-3xl font-bold">Volunteer Dashboard</h1>
             <p className="text-muted-foreground">Welcome back, {user.email}</p>
             <div className="mt-2 inline-block px-3 py-1 bg-primary/10 text-primary rounded-full text-sm font-medium uppercase">
               Role: {userRole || 'Pending'}
@@ -42,18 +47,12 @@ function AppContent() {
             <p className="text-sm text-muted-foreground">Manage your account settings and preferences.</p>
           </div>
           <div className="p-6 bg-white rounded-xl shadow-sm border">
-            <h3 className="font-semibold mb-2">
-              {userRole === 'ngo' ? 'My Opportunities' : 'My Applications'}
-            </h3>
-            <p className="text-sm text-muted-foreground">
-              {userRole === 'ngo' 
-                ? 'Create and manage volunteer opportunities.' 
-                : 'Track your volunteer applications and status.'}
-            </p>
+            <h3 className="font-semibold mb-2">My Applications</h3>
+            <p className="text-sm text-muted-foreground">Track your volunteer applications and status.</p>
           </div>
           <div className="p-6 bg-white rounded-xl shadow-sm border">
             <h3 className="font-semibold mb-2">Messages</h3>
-            <p className="text-sm text-muted-foreground">Connect with {userRole === 'ngo' ? 'volunteers' : 'NGOs'}.</p>
+            <p className="text-sm text-muted-foreground">Connect with NGOs.</p>
           </div>
         </div>
       </div>
