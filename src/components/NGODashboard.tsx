@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
-import { useAuth } from '@/lib/AuthContext';
-import { auth, db } from '@/lib/firebase';
+import React, { useState, useEffect } from 'react';
+import { useAuth } from '@/src/lib/AuthContext';
+import { auth, db } from '@/src/lib/firebase';
 import { signOut } from 'firebase/auth';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, query, where, orderBy, onSnapshot, Timestamp } from 'firebase/firestore';
 import { 
   LayoutDashboard, 
   Upload, 
@@ -13,7 +13,9 @@ import {
   Send,
   AlertCircle,
   BarChart3,
-  ChevronRight
+  ChevronRight,
+  FileText,
+  Calendar
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -35,12 +37,45 @@ interface AnalysisResult {
   urgency: 'Immediate' | 'Soon' | 'Planned';
 }
 
+interface Report {
+  id: string;
+  content: string;
+  analysis: AnalysisResult[];
+  status: 'pending' | 'in-progress' | 'completed';
+  createdAt: Timestamp;
+}
+
 export default function NGODashboard() {
   const { user } = useAuth();
   const [activeSection, setActiveSection] = useState<Section>('home');
   const [reportText, setReportText] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResults, setAnalysisResults] = useState<AnalysisResult[]>([]);
+  const [previousReports, setPreviousReports] = useState<Report[]>([]);
+  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const q = query(
+      collection(db, 'reports'),
+      where('ngoId', '==', user.uid),
+      orderBy('createdAt', 'desc')
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const reports = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Report[];
+      setPreviousReports(reports);
+    }, (error) => {
+      console.error("Error fetching reports:", error);
+      toast.error("Failed to load previous uploads.");
+    });
+
+    return () => unsubscribe();
+  }, [user]);
 
   const handleAnalyze = async () => {
     if (!reportText.trim()) {
@@ -87,6 +122,7 @@ export default function NGODashboard() {
         });
         
         toast.success("Analysis complete and saved!");
+        setReportText(''); // Clear input after success
       } else {
         throw new Error("Could not parse AI response");
       }
@@ -301,7 +337,129 @@ export default function NGODashboard() {
             </motion.div>
           )}
 
-          {(activeSection === 'previous' || activeSection === 'progress' || activeSection === 'completed') && (
+          {activeSection === 'previous' && (
+            <motion.div
+              key="previous"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="max-w-5xl mx-auto"
+            >
+              <div className="mb-8 flex justify-between items-end">
+                <div>
+                  <h2 className="text-3xl font-bold text-slate-900">Previous Uploads</h2>
+                  <p className="text-slate-500">View and manage your historical report data and AI insights.</p>
+                </div>
+                {selectedReport && (
+                  <Button variant="ghost" onClick={() => setSelectedReport(null)}>
+                    ← Back to list
+                  </Button>
+                )}
+              </div>
+
+              {!selectedReport ? (
+                <div className="grid grid-cols-1 gap-4">
+                  {previousReports.length === 0 ? (
+                    <Card className="bg-white/50 border-dashed border-2 flex flex-col items-center justify-center py-20 text-slate-400">
+                      <History className="w-12 h-12 mb-4 opacity-20" />
+                      <p>No reports uploaded yet.</p>
+                    </Card>
+                  ) : (
+                    previousReports.map((report) => (
+                      <Card 
+                        key={report.id} 
+                        className="hover:shadow-md transition-shadow cursor-pointer group"
+                        onClick={() => setSelectedReport(report)}
+                      >
+                        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                          <div className="flex items-center gap-3">
+                            <div className="p-2 bg-primary/10 rounded-lg text-primary">
+                              <FileText className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <CardTitle className="text-lg">Report Analysis</CardTitle>
+                              <CardDescription className="flex items-center gap-2">
+                                <Calendar className="w-3 h-3" />
+                                {report.createdAt?.toDate().toLocaleDateString()} at {report.createdAt?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </CardDescription>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-4">
+                            <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${
+                              report.status === 'completed' ? 'bg-green-100 text-green-700' : 
+                              report.status === 'in-progress' ? 'bg-blue-100 text-blue-700' : 
+                              'bg-amber-100 text-amber-700'
+                            }`}>
+                              {report.status}
+                            </span>
+                            <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-primary transition-colors" />
+                          </div>
+                        </CardHeader>
+                        <CardContent>
+                          <p className="text-sm text-slate-600 line-clamp-2 italic">
+                            "{report.content}"
+                          </p>
+                        </CardContent>
+                      </Card>
+                    ))
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Original Report Content</CardTitle>
+                      <CardDescription>The data you provided for analysis.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="p-4 bg-slate-50 rounded-lg text-sm text-slate-700 leading-relaxed whitespace-pre-wrap border">
+                        {selectedReport.content}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <div className="space-y-4">
+                    <h3 className="text-xl font-semibold flex items-center gap-2">
+                      <AlertCircle className="w-5 h-5 text-primary" />
+                      AI Analysis Results
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {selectedReport.analysis.map((result, index) => (
+                        <Card key={index} className="h-full border-l-4" 
+                          style={{ 
+                            borderLeftColor: result.priority === 'High' ? '#ef4444' : result.priority === 'Medium' ? '#f59e0b' : '#10b981' 
+                          }}
+                        >
+                          <CardHeader className="pb-2">
+                            <div className="flex justify-between items-start mb-2">
+                              <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${
+                                result.priority === 'High' ? 'bg-red-100 text-red-700' : 
+                                result.priority === 'Medium' ? 'bg-amber-100 text-amber-700' : 
+                                'bg-emerald-100 text-emerald-700'
+                              }`}>
+                                {result.priority} Priority
+                              </span>
+                              <span className="text-[10px] font-medium text-slate-400 uppercase">
+                                {result.urgency}
+                              </span>
+                            </div>
+                            <CardTitle className="text-lg">{result.title}</CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <p className="text-sm text-slate-600 leading-relaxed">
+                              {result.description}
+                            </p>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          )}
+
+          {(activeSection === 'progress' || activeSection === 'completed') && (
             <motion.div
               key={activeSection}
               initial={{ opacity: 0 }}

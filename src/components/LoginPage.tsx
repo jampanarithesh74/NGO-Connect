@@ -6,7 +6,7 @@ import {
   signOut 
 } from 'firebase/auth';
 import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db, googleProvider } from '@/lib/firebase';
+import { auth, db, googleProvider } from '@/src/lib/firebase';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
