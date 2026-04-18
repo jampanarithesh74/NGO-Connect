@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/src/lib/AuthContext';
 import { auth, db } from '@/src/lib/firebase';
 import { signOut } from 'firebase/auth';
-import { collection, addDoc, serverTimestamp, query, where, orderBy, onSnapshot, Timestamp } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, query, where, orderBy, onSnapshot, Timestamp, updateDoc, doc, writeBatch } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '@/src/lib/firestoreUtils';
 import { 
   LayoutDashboard, 
@@ -16,16 +16,37 @@ import {
   BarChart3,
   ChevronRight,
   FileText,
-  Calendar
+  Calendar,
+  MoreVertical,
+  Edit2,
+  Trash2,
+  XCircle,
+  Play,
+  Users
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
+import { 
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
@@ -42,8 +63,22 @@ interface Report {
   id: string;
   content: string;
   analysis: AnalysisResult[];
-  status: 'pending' | 'in-progress' | 'completed';
+  status: 'pending' | 'processed';
   createdAt: Timestamp;
+}
+
+interface Task {
+  id: string;
+  reportId: string;
+  ngoId: string;
+  volunteerId?: string;
+  title: string;
+  description: string;
+  priority: 'High' | 'Medium' | 'Low';
+  urgency: 'Immediate' | 'Soon' | 'Planned';
+  status: 'pending' | 'accepted' | 'in-progress' | 'completed' | 'cancelled';
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
 }
 
 export default function NGODashboard() {
@@ -54,17 +89,24 @@ export default function NGODashboard() {
   const [analysisResults, setAnalysisResults] = useState<AnalysisResult[]>([]);
   const [previousReports, setPreviousReports] = useState<Report[]>([]);
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  
+  // Editing state
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDescription, setEditDescription] = useState('');
 
   useEffect(() => {
     if (!user) return;
 
-    const q = query(
+    // Fetch reports
+    const reportsQuery = query(
       collection(db, 'reports'),
       where('ngoId', '==', user.uid),
       orderBy('createdAt', 'desc')
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    const unsubscribeReports = onSnapshot(reportsQuery, (snapshot) => {
       const reports = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
@@ -74,8 +116,61 @@ export default function NGODashboard() {
       handleFirestoreError(error, OperationType.LIST, 'reports');
     });
 
-    return () => unsubscribe();
+    // Fetch tasks
+    const tasksQuery = query(
+      collection(db, 'tasks'),
+      where('ngoId', '==', user.uid),
+      orderBy('createdAt', 'desc')
+    );
+
+    const unsubscribeTasks = onSnapshot(tasksQuery, (snapshot) => {
+      const tasksData = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Task[];
+      setTasks(tasksData);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'tasks');
+    });
+
+    return () => {
+      unsubscribeReports();
+      unsubscribeTasks();
+    };
   }, [user]);
+
+  const handleUpdateTaskStatus = async (taskId: string, newStatus: Task['status']) => {
+    try {
+      await updateDoc(doc(db, 'tasks', taskId), {
+        status: newStatus,
+        updatedAt: serverTimestamp()
+      });
+      toast.success(`Task status updated to ${newStatus}`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `tasks/${taskId}`);
+    }
+  };
+
+  const handleEditTask = (task: Task) => {
+    setEditingTask(task);
+    setEditTitle(task.title);
+    setEditDescription(task.description);
+  };
+
+  const handleSaveTaskEdit = async () => {
+    if (!editingTask) return;
+    try {
+      await updateDoc(doc(db, 'tasks', editingTask.id), {
+        title: editTitle,
+        description: editDescription,
+        updatedAt: serverTimestamp()
+      });
+      toast.success("Task updated successfully");
+      setEditingTask(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `tasks/${editingTask.id}`);
+    }
+  };
 
   const handleAnalyze = async () => {
     if (!reportText.trim()) {
@@ -109,23 +204,37 @@ export default function NGODashboard() {
       // Clean up the response to ensure it's valid JSON
       const jsonMatch = text.match(/\[.*\]/s);
       if (jsonMatch) {
-        const parsedResults = JSON.parse(jsonMatch[0]);
+        const parsedResults = JSON.parse(jsonMatch[0]) as AnalysisResult[];
         setAnalysisResults(parsedResults);
         
-        // Save to Firestore
-        try {
-          await addDoc(collection(db, 'reports'), {
+        // Save Report
+        const reportRef = await addDoc(collection(db, 'reports'), {
+          ngoId: user?.uid,
+          content: reportText,
+          analysis: parsedResults,
+          status: 'processed',
+          createdAt: serverTimestamp(),
+        });
+
+        // Save individual tasks using a batch
+        const batch = writeBatch(db);
+        parsedResults.forEach((item) => {
+          const taskRef = doc(collection(db, 'tasks'));
+          batch.set(taskRef, {
+            reportId: reportRef.id,
             ngoId: user?.uid,
-            content: reportText,
-            analysis: parsedResults,
+            title: item.title,
+            description: item.description,
+            priority: item.priority,
+            urgency: item.urgency,
             status: 'pending',
             createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
           });
-        } catch (error) {
-          handleFirestoreError(error, OperationType.CREATE, 'reports');
-        }
+        });
+        await batch.commit();
         
-        toast.success("Analysis complete and saved!");
+        toast.success("Analysis complete and tasks generated!");
         setReportText(''); // Clear input after success
       } else {
         throw new Error("Could not parse AI response");
@@ -466,15 +575,139 @@ export default function NGODashboard() {
           {(activeSection === 'progress' || activeSection === 'completed') && (
             <motion.div
               key={activeSection}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="flex flex-col items-center justify-center h-[60vh] text-slate-400"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="max-w-5xl mx-auto"
             >
-              <div className="p-4 bg-slate-100 rounded-full mb-4">
-                <LayoutDashboard className="w-12 h-12" />
+              <div className="mb-8">
+                <h2 className="text-3xl font-bold text-slate-900">
+                  {activeSection === 'progress' ? 'In Progress Works' : 'Completed Tasks'}
+                </h2>
+                <p className="text-slate-500">
+                  {activeSection === 'progress' 
+                    ? 'Track and manage tasks currently being worked on.' 
+                    : 'A history of all successfully finished tasks.'}
+                </p>
               </div>
-              <h3 className="text-xl font-medium">Section Under Construction</h3>
-              <p>We'll be building the {activeSection.replace('_', ' ')} section next!</p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {tasks.filter(t => t.status === (activeSection === 'progress' ? 'in-progress' : 'completed')).length === 0 ? (
+                  <div className="col-span-full py-20 text-center text-slate-400">
+                    <p>No tasks found in this section.</p>
+                  </div>
+                ) : (
+                  tasks
+                    .filter(t => t.status === (activeSection === 'progress' ? 'in-progress' : 'completed'))
+                    .map((task) => (
+                      <Card key={task.id} className="border-l-4" 
+                        style={{ 
+                          borderLeftColor: task.priority === 'High' ? '#ef4444' : task.priority === 'Medium' ? '#f59e0b' : '#10b981' 
+                        }}
+                      >
+                        <CardHeader className="pb-2">
+                          <div className="flex justify-between items-start mb-2">
+                            <div className="flex gap-2">
+                              <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${
+                                task.priority === 'High' ? 'bg-red-100 text-red-700' : 
+                                task.priority === 'Medium' ? 'bg-amber-100 text-amber-700' : 
+                                'bg-emerald-100 text-emerald-700'
+                              }`}>
+                                {task.priority}
+                              </span>
+                              <span className="text-[10px] font-medium text-slate-400 uppercase bg-slate-100 px-2 py-1 rounded">
+                                {task.urgency}
+                              </span>
+                            </div>
+                            
+                            <DropdownMenu>
+                              <DropdownMenuTrigger className="h-8 w-8 inline-flex items-center justify-center rounded-md hover:bg-slate-100 text-slate-500 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-primary/50">
+                                <MoreVertical className="h-4 w-4" />
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => handleEditTask(task)}>
+                                  <Edit2 className="mr-2 h-4 w-4" />
+                                  Edit Details
+                                </DropdownMenuItem>
+                                {task.status === 'in-progress' && (
+                                  <DropdownMenuItem onClick={() => handleUpdateTaskStatus(task.id, 'completed')}>
+                                    <CheckCircle2 className="mr-2 h-4 w-4 text-green-600" />
+                                    Mark Completed
+                                  </DropdownMenuItem>
+                                )}
+                                {task.status === 'pending' && (
+                                  <DropdownMenuItem onClick={() => handleUpdateTaskStatus(task.id, 'cancelled')} className="text-red-600">
+                                    <XCircle className="mr-2 h-4 w-4" />
+                                    Cancel Task
+                                  </DropdownMenuItem>
+                                )}
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                          <CardTitle className="text-lg">{task.title}</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <p className="text-sm text-slate-600 line-clamp-3">
+                            {task.description}
+                          </p>
+                          {task.volunteerId && (
+                            <div className="mt-4 flex items-center gap-2 text-xs text-slate-500 bg-slate-50 p-2 rounded">
+                              <Users className="w-3 h-3" />
+                              Assigned to Volunteer
+                            </div>
+                          )}
+                        </CardContent>
+                        <CardFooter className="pt-0 flex justify-between items-center">
+                          <div className="text-[10px] text-slate-400 flex items-center gap-1">
+                            <Calendar className="w-3 h-3" />
+                            {task.createdAt?.toDate().toLocaleDateString()}
+                          </div>
+                          {task.status === 'pending' && (
+                            <Button size="sm" onClick={() => handleUpdateTaskStatus(task.id, 'in-progress')}>
+                              <Play className="w-3 h-3 mr-1" />
+                              Start
+                            </Button>
+                          )}
+                        </CardFooter>
+                      </Card>
+                    ))
+                )}
+              </div>
+
+              {/* Edit Dialog */}
+              <Dialog open={!!editingTask} onOpenChange={(open) => !open && setEditingTask(null)}>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Edit Task Details</DialogTitle>
+                    <DialogDescription>
+                      Update the title and description for this task.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-4 py-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="title">Task Title</Label>
+                      <Input 
+                        id="title" 
+                        value={editTitle} 
+                        onChange={(e) => setEditTitle(e.target.value)} 
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="desc">Description</Label>
+                      <Textarea 
+                        id="desc" 
+                        value={editDescription} 
+                        onChange={(e) => setEditDescription(e.target.value)} 
+                        rows={4}
+                      />
+                    </div>
+                  </div>
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setEditingTask(null)}>Cancel</Button>
+                    <Button onClick={handleSaveTaskEdit}>Save Changes</Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
             </motion.div>
           )}
         </AnimatePresence>

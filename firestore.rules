@@ -30,6 +30,29 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasRole(role) {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserData().role == role;
+    }
+
+    function isNGO() {
+      return hasRole('ngo');
+    }
+
+    function isVolunteer() {
+      return hasRole('volunteer');
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserData().role == 'admin') ||
+        (request.auth.token.email == "jampanapadmaja7474@gmail.com" && request.auth.token.email_verified == true)
+      );
+    }
+
     function isValidUser(data) {
       return data.keys().hasAll(['uid', 'email', 'role', 'createdAt', 'updatedAt']) &&
              data.uid == request.auth.uid &&
@@ -38,12 +61,6 @@ service cloud.firestore {
              (!('skills' in data) || data.skills is list) &&
              data.createdAt is timestamp &&
              data.updatedAt is timestamp;
-    }
-
-    function isAdmin() {
-      return isAuthenticated() && 
-             (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-              (request.auth.token.email == "jampanapadmaja7474@gmail.com" && request.auth.token.email_verified == true));
     }
 
     // ===============================================================
@@ -59,15 +76,29 @@ service cloud.firestore {
     }
 
     match /reports/{reportId} {
-      function isNGO() {
-        return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'ngo';
-      }
-      
       // Allow all authenticated users to read reports so volunteers can find needs
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isNGO() && request.resource.data.ngoId == request.auth.uid;
-      allow update: if isAuthenticated() && (isNGO() && resource.data.ngoId == request.auth.uid || isAdmin());
-      allow delete: if isAuthenticated() && isNGO() && resource.data.ngoId == request.auth.uid;
+      allow create: if isNGO() && request.resource.data.ngoId == request.auth.uid;
+      allow update: if (isNGO() && resource.data.ngoId == request.auth.uid) || isAdmin();
+      allow delete: if isNGO() && resource.data.ngoId == request.auth.uid;
+    }
+
+    match /tasks/{taskId} {
+      allow read: if isAuthenticated();
+      allow create: if isNGO() && request.resource.data.ngoId == request.auth.uid;
+      allow update: if isAuthenticated() && (
+        (isNGO() && resource.data.ngoId == request.auth.uid) || 
+        (isVolunteer() && (
+          // Volunteer can accept a pending task
+          (resource.data.status == 'pending' && request.resource.data.status == 'accepted' && request.resource.data.volunteerId == request.auth.uid) ||
+          // Volunteer can start an accepted task
+          (resource.data.status == 'accepted' && resource.data.volunteerId == request.auth.uid && request.resource.data.status == 'in-progress') ||
+          // Volunteer can complete an in-progress task
+          (resource.data.status == 'in-progress' && resource.data.volunteerId == request.auth.uid && request.resource.data.status == 'completed')
+        )) ||
+        isAdmin()
+      );
+      allow delete: if isNGO() && resource.data.ngoId == request.auth.uid;
     }
   }
 }

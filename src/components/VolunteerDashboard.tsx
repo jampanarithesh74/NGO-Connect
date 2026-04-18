@@ -10,7 +10,8 @@ import {
   doc, 
   updateDoc, 
   serverTimestamp,
-  Timestamp
+  Timestamp,
+  where
 } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '@/src/lib/firestoreUtils';
 import { 
@@ -32,7 +33,8 @@ import {
   BookOpen,
   Truck,
   Wrench,
-  Users
+  Users,
+  Play
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
@@ -51,11 +53,12 @@ interface Task {
   id: string;
   reportId: string;
   ngoId: string;
+  volunteerId?: string;
   title: string;
   description: string;
   priority: 'High' | 'Medium' | 'Low';
   urgency: 'Immediate' | 'Soon' | 'Planned';
-  status: 'pending' | 'in-progress' | 'completed';
+  status: 'pending' | 'accepted' | 'in-progress' | 'completed' | 'cancelled';
   createdAt: Timestamp;
 }
 
@@ -78,36 +81,45 @@ export default function VolunteerDashboard() {
   const [customSkill, setCustomSkill] = useState('');
   const [isSavingSkills, setIsSavingSkills] = useState(false);
 
-  // Fetch all tasks from NGO reports
+  // Fetch tasks from tasks collection
   useEffect(() => {
-    const q = query(collection(db, 'reports'), orderBy('createdAt', 'desc'));
+    const q = query(collection(db, 'tasks'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const tasks: Task[] = [];
-      snapshot.docs.forEach(doc => {
-        const data = doc.data();
-        if (data.analysis && Array.isArray(data.analysis)) {
-          data.analysis.forEach((item: any, index: number) => {
-            tasks.push({
-              id: `${doc.id}-${index}`,
-              reportId: doc.id,
-              ngoId: data.ngoId,
-              title: item.title,
-              description: item.description,
-              priority: item.priority,
-              urgency: item.urgency,
-              status: data.status || 'pending',
-              createdAt: data.createdAt
-            });
-          });
-        }
-      });
+      const tasks = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Task[];
       setAllTasks(tasks);
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'reports');
+      handleFirestoreError(error, OperationType.LIST, 'tasks');
     });
 
     return () => unsubscribe();
   }, []);
+
+  const handleUpdateTaskStatus = async (taskId: string, newStatus: Task['status']) => {
+    try {
+      const updateData: any = {
+        status: newStatus,
+        updatedAt: serverTimestamp()
+      };
+      
+      if (newStatus === 'accepted') {
+        updateData.volunteerId = user?.uid;
+      }
+
+      await updateDoc(doc(db, 'tasks', taskId), updateData);
+      toast.success(`Task ${newStatus} successfully!`);
+      
+      if (newStatus === 'accepted') {
+        setActiveSection('accepted');
+      } else if (newStatus === 'in-progress') {
+        setActiveSection('progress');
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `tasks/${taskId}`);
+    }
+  };
 
   const handleSaveSkills = async () => {
     if (selectedSkills.length === 0 && !customSkill.trim()) {
@@ -364,7 +376,7 @@ export default function VolunteerDashboard() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-                {allTasks.map((task) => (
+                {allTasks.filter(t => t.status === 'pending').map((task) => (
                   <Card key={task.id} className="border-l-4" 
                     style={{ 
                       borderLeftColor: task.priority === 'High' ? '#ef4444' : task.priority === 'Medium' ? '#f59e0b' : '#10b981' 
@@ -436,12 +448,12 @@ export default function VolunteerDashboard() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {matchedTasks.length === 0 ? (
+                  {matchedTasks.filter(t => t.status === 'pending').length === 0 ? (
                     <div className="col-span-full py-20 text-center text-slate-400">
                       <p>No direct matches found. Try adding more skills to your profile!</p>
                     </div>
                   ) : (
-                    matchedTasks.map((task) => (
+                    matchedTasks.filter(t => t.status === 'pending').map((task) => (
                       <Card key={task.id} className="border-l-4 border-amber-400 bg-amber-50/30">
                         <CardHeader className="pb-2">
                           <div className="flex justify-between items-start mb-2">
@@ -460,7 +472,7 @@ export default function VolunteerDashboard() {
                           </p>
                         </CardContent>
                         <CardFooter>
-                          <Button variant="outline" className="w-full">
+                          <Button variant="outline" className="w-full" onClick={() => handleUpdateTaskStatus(task.id, 'accepted')}>
                             Accept Task
                           </Button>
                         </CardFooter>
@@ -475,15 +487,87 @@ export default function VolunteerDashboard() {
           {(activeSection === 'accepted' || activeSection === 'progress' || activeSection === 'contributions') && (
             <motion.div
               key={activeSection}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="flex flex-col items-center justify-center h-[60vh] text-slate-400"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="max-w-5xl mx-auto"
             >
-              <div className="p-4 bg-slate-100 rounded-full mb-4">
-                <LayoutDashboard className="w-12 h-12" />
+              <div className="mb-8">
+                <h2 className="text-3xl font-bold text-slate-900">
+                  {activeSection === 'accepted' ? 'Accepted Tasks' : 
+                   activeSection === 'progress' ? 'In Progress Tasks' : 'Your Contributions'}
+                </h2>
+                <p className="text-slate-500">
+                  {activeSection === 'accepted' ? 'Tasks you have committed to help with.' : 
+                   activeSection === 'progress' ? 'Tasks you are currently working on.' : 
+                   'A summary of your positive impact.'}
+                </p>
               </div>
-              <h3 className="text-xl font-medium">Section Under Construction</h3>
-              <p>We'll be building the {activeSection.replace('_', ' ')} section next!</p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {allTasks.filter(t => t.volunteerId === user?.uid && t.status === (
+                  activeSection === 'accepted' ? 'accepted' : 
+                  activeSection === 'progress' ? 'in-progress' : 'completed'
+                )).length === 0 ? (
+                  <div className="col-span-full py-20 text-center text-slate-400">
+                    <p>No tasks found in this section.</p>
+                  </div>
+                ) : (
+                  allTasks
+                    .filter(t => t.volunteerId === user?.uid && t.status === (
+                      activeSection === 'accepted' ? 'accepted' : 
+                      activeSection === 'progress' ? 'in-progress' : 'completed'
+                    ))
+                    .map((task) => (
+                      <Card key={task.id} className="border-l-4" 
+                        style={{ 
+                          borderLeftColor: task.priority === 'High' ? '#ef4444' : task.priority === 'Medium' ? '#f59e0b' : '#10b981' 
+                        }}
+                      >
+                        <CardHeader className="pb-2">
+                          <div className="flex justify-between items-start mb-2">
+                            <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${
+                              task.priority === 'High' ? 'bg-red-100 text-red-700' : 
+                              task.priority === 'Medium' ? 'bg-amber-100 text-amber-700' : 
+                              'bg-emerald-100 text-emerald-700'
+                            }`}>
+                              {task.priority} Priority
+                            </span>
+                            <span className="text-[10px] font-medium text-slate-400 uppercase">
+                              {task.urgency}
+                            </span>
+                          </div>
+                          <CardTitle className="text-lg">{task.title}</CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <p className="text-sm text-slate-600">
+                            {task.description}
+                          </p>
+                        </CardContent>
+                        <CardFooter>
+                          {task.status === 'accepted' && (
+                            <Button className="w-full" onClick={() => handleUpdateTaskStatus(task.id, 'in-progress')}>
+                              <Play className="w-4 h-4 mr-2" />
+                              Start Task
+                            </Button>
+                          )}
+                          {task.status === 'in-progress' && (
+                            <Button className="w-full bg-green-600 hover:bg-green-700" onClick={() => handleUpdateTaskStatus(task.id, 'completed')}>
+                              <CheckCircle2 className="w-4 h-4 mr-2" />
+                              Complete Task
+                            </Button>
+                          )}
+                          {task.status === 'completed' && (
+                            <div className="w-full flex items-center justify-center gap-2 text-green-600 font-medium bg-green-50 py-2 rounded">
+                              <Trophy className="w-4 h-4" />
+                              Task Completed!
+                            </div>
+                          )}
+                        </CardFooter>
+                      </Card>
+                    ))
+                )}
+              </div>
             </motion.div>
           )}
         </AnimatePresence>

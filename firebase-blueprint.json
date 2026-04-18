@@ -25,10 +25,28 @@
         "ngoId": { "type": "string" },
         "content": { "type": "string" },
         "analysis": { "type": "object" },
-        "status": { "type": "string", "enum": ["pending", "in-progress", "completed"] },
+        "status": { "type": "string", "enum": ["pending", "processed"] },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["ngoId", "content", "status"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "Individual task extracted from a report",
+      "type": "object",
+      "properties": {
+        "reportId": { "type": "string" },
+        "ngoId": { "type": "string" },
+        "volunteerId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "priority": { "type": "string", "enum": ["High", "Medium", "Low"] },
+        "urgency": { "type": "string", "enum": ["Immediate", "Soon", "Planned"] },
+        "status": { "type": "string", "enum": ["pending", "accepted", "in-progress", "completed", "cancelled"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reportId", "ngoId", "title", "status"]
     }
   },
   "firestore": {
@@ -39,6 +57,10 @@
     "/reports/{reportId}": {
       "schema": "Report",
       "description": "NGO reports and analysis"
+    },
+    "/tasks/{taskId}": {
+      "schema": "Task",
+      "description": "Individual tasks extracted from reports"
     }
   }
 }
