@@ -1,6 +1,7 @@
 import { AuthProvider, useAuth } from './lib/AuthContext';
 import LoginPage from './components/LoginPage';
 import NGODashboard from './components/NGODashboard';
+import VolunteerDashboard from './components/VolunteerDashboard';
 import { Toaster } from '@/components/ui/sonner';
 import { Button } from '@/components/ui/button';
 import { auth } from './lib/firebase';
@@ -23,6 +24,10 @@ function AppContent() {
 
   if (userRole === 'ngo') {
     return <NGODashboard />;
+  }
+
+  if (userRole === 'volunteer') {
+    return <VolunteerDashboard />;
   }
 
   return (
@@ -64,7 +69,7 @@ export default function App() {
   return (
     <AuthProvider>
       <AppContent />
-      <Toaster position="top-center" />
+      <Toaster position="top-center" richColors />
     </AuthProvider>
   );
 }

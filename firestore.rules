@@ -35,6 +35,7 @@ service cloud.firestore {
              data.uid == request.auth.uid &&
              data.email is string &&
              data.role in ['ngo', 'volunteer'] &&
+             (!('skills' in data) || data.skills is list) &&
              data.createdAt is timestamp &&
              data.updatedAt is timestamp;
     }
@@ -62,9 +63,10 @@ service cloud.firestore {
         return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'ngo';
       }
       
-      allow read: if isAuthenticated() && (resource.data.ngoId == request.auth.uid || isAdmin());
+      // Allow all authenticated users to read reports so volunteers can find needs
+      allow read: if isAuthenticated();
       allow create: if isAuthenticated() && isNGO() && request.resource.data.ngoId == request.auth.uid;
-      allow update: if isAuthenticated() && isNGO() && resource.data.ngoId == request.auth.uid;
+      allow update: if isAuthenticated() && (isNGO() && resource.data.ngoId == request.auth.uid || isAdmin());
       allow delete: if isAuthenticated() && isNGO() && resource.data.ngoId == request.auth.uid;
     }
   }

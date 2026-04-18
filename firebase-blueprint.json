@@ -10,6 +10,7 @@
         "displayName": { "type": "string" },
         "photoURL": { "type": "string" },
         "role": { "type": "string", "enum": ["ngo", "volunteer"] },
+        "skills": { "type": "array", "items": { "type": "string" }, "description": "Volunteer skills" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

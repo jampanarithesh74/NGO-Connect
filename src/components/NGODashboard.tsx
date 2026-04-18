@@ -3,6 +3,7 @@ import { useAuth } from '@/src/lib/AuthContext';
 import { auth, db } from '@/src/lib/firebase';
 import { signOut } from 'firebase/auth';
 import { collection, addDoc, serverTimestamp, query, where, orderBy, onSnapshot, Timestamp } from 'firebase/firestore';
+import { handleFirestoreError, OperationType } from '@/src/lib/firestoreUtils';
 import { 
   LayoutDashboard, 
   Upload, 
@@ -70,8 +71,7 @@ export default function NGODashboard() {
       })) as Report[];
       setPreviousReports(reports);
     }, (error) => {
-      console.error("Error fetching reports:", error);
-      toast.error("Failed to load previous uploads.");
+      handleFirestoreError(error, OperationType.LIST, 'reports');
     });
 
     return () => unsubscribe();
@@ -113,13 +113,17 @@ export default function NGODashboard() {
         setAnalysisResults(parsedResults);
         
         // Save to Firestore
-        await addDoc(collection(db, 'reports'), {
-          ngoId: user?.uid,
-          content: reportText,
-          analysis: parsedResults,
-          status: 'pending',
-          createdAt: serverTimestamp(),
-        });
+        try {
+          await addDoc(collection(db, 'reports'), {
+            ngoId: user?.uid,
+            content: reportText,
+            analysis: parsedResults,
+            status: 'pending',
+            createdAt: serverTimestamp(),
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.CREATE, 'reports');
+        }
         
         toast.success("Analysis complete and saved!");
         setReportText(''); // Clear input after success

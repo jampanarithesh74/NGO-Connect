@@ -6,6 +6,7 @@ import { auth, db } from './firebase';
 interface AuthContextType {
   user: User | null;
   userRole: 'ngo' | 'volunteer' | null;
+  userSkills: string[] | null;
   loading: boolean;
   isAuthReady: boolean;
 }
@@ -13,6 +14,7 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType>({
   user: null,
   userRole: null,
+  userSkills: null,
   loading: true,
   isAuthReady: false,
 });
@@ -22,6 +24,7 @@ export const useAuth = () => useContext(AuthContext);
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [userRole, setUserRole] = useState<'ngo' | 'volunteer' | null>(null);
+  const [userSkills, setUserSkills] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [isAuthReady, setIsAuthReady] = useState(false);
 
@@ -33,16 +36,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         try {
           const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
           if (userDoc.exists()) {
-            setUserRole(userDoc.data().role);
+            const data = userDoc.data();
+            setUserRole(data.role);
+            setUserSkills(data.skills || []);
           } else {
             setUserRole(null);
+            setUserSkills(null);
           }
         } catch (error) {
           console.error("Error fetching user role:", error);
           setUserRole(null);
+          setUserSkills(null);
         }
       } else {
         setUserRole(null);
+        setUserSkills(null);
       }
       
       setLoading(false);
@@ -53,7 +61,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, userRole, loading, isAuthReady }}>
+    <AuthContext.Provider value={{ user, userRole, userSkills, loading, isAuthReady }}>
       {children}
     </AuthContext.Provider>
   );
