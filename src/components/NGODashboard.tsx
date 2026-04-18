@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/src/lib/AuthContext';
 import { auth, db } from '@/src/lib/firebase';
 import { signOut } from 'firebase/auth';
-import { collection, addDoc, serverTimestamp, query, where, orderBy, onSnapshot, Timestamp, updateDoc, doc, writeBatch } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, query, where, orderBy, onSnapshot, Timestamp, updateDoc, doc, writeBatch, getDoc } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '@/src/lib/firestoreUtils';
 import { 
   LayoutDashboard, 
@@ -28,6 +28,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { awardPointsAndBadges } from '@/src/lib/gamification';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
@@ -141,10 +142,33 @@ export default function NGODashboard() {
 
   const handleUpdateTaskStatus = async (taskId: string, newStatus: Task['status']) => {
     try {
+      const task = tasks.find(t => t.id === taskId);
+      if (!task) return;
+
       await updateDoc(doc(db, 'tasks', taskId), {
         status: newStatus,
         updatedAt: serverTimestamp()
       });
+
+      // Award points and badges if completed
+      if (newStatus === 'completed' && task.volunteerId) {
+        const loadingToast = toast.loading("Awarding volunteer impact points...");
+        try {
+          const result = await awardPointsAndBadges(task.volunteerId, task.priority);
+          toast.dismiss(loadingToast);
+          if (result) {
+            toast.success(`Volunteer awarded ${result.pointsAdded} points!`);
+            if (result.newBadgesCount > 0) {
+              toast.success(`Volunteer earned ${result.newBadgesCount} new badge(s)!`);
+            }
+          }
+        } catch (error) {
+          toast.dismiss(loadingToast);
+          console.error("Failed to award points:", error);
+          toast.error("Failed to award points to volunteer.");
+        }
+      }
+
       toast.success(`Task status updated to ${newStatus}`);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `tasks/${taskId}`);

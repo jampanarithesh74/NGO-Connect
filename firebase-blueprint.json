@@ -11,6 +11,18 @@
         "photoURL": { "type": "string" },
         "role": { "type": "string", "enum": ["ngo", "volunteer"] },
         "skills": { "type": "array", "items": { "type": "string" }, "description": "Volunteer skills" },
+        "totalPoints": { "type": "integer", "description": "Total impact points earned" },
+        "earnedBadges": { 
+          "type": "array", 
+          "items": { 
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "earnedAt": { "type": "string", "format": "date-time" }
+            }
+          }
+        },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

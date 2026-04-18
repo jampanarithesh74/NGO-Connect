@@ -43,6 +43,8 @@ export default function LoginPage() {
           uid: userCredential.user.uid,
           email: userCredential.user.email,
           role: role,
+          totalPoints: role === 'volunteer' ? 0 : null,
+          earnedBadges: role === 'volunteer' ? [] : null,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -84,6 +86,8 @@ export default function LoginPage() {
           displayName: user.displayName,
           photoURL: user.photoURL,
           role: role,
+          totalPoints: role === 'volunteer' ? 0 : null,
+          earnedBadges: role === 'volunteer' ? [] : null,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });

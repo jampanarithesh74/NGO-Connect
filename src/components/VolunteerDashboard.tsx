@@ -11,7 +11,8 @@ import {
   updateDoc, 
   serverTimestamp,
   Timestamp,
-  where
+  where,
+  limit
 } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '@/src/lib/firestoreUtils';
 import { 
@@ -34,7 +35,11 @@ import {
   Truck,
   Wrench,
   Users,
-  Play
+  Play,
+  Medal,
+  Award,
+  TrendingUp,
+  Star
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
@@ -44,10 +49,11 @@ import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
+import { awardPointsAndBadges } from '@/src/lib/gamification';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
-type Section = 'home' | 'find' | 'matched' | 'accepted' | 'progress' | 'contributions';
+type Section = 'home' | 'find' | 'matched' | 'accepted' | 'progress' | 'contributions' | 'leaderboard' | 'badges';
 
 interface Task {
   id: string;
@@ -61,6 +67,20 @@ interface Task {
   status: 'pending' | 'accepted' | 'in-progress' | 'completed' | 'cancelled';
   createdAt: Timestamp;
 }
+
+interface VolunteerProfile {
+  uid: string;
+  displayName?: string;
+  email: string;
+  totalPoints?: number;
+  earnedBadges?: { id: string; label: string; earnedAt: string }[];
+}
+
+const BADGE_CONFIG = [
+  { id: 'first_responder', label: 'First Responder', description: 'Completed your first task!', icon: Sparkles, color: 'text-amber-500', bg: 'bg-amber-50' },
+  { id: 'high_impact', label: 'High Impact', description: 'Completed 3 High Priority tasks.', icon: Zap, color: 'text-blue-500', bg: 'bg-blue-50' },
+  { id: 'community_pillar', label: 'Community Pillar', description: 'Completed 10 total tasks.', icon: Trophy, color: 'text-purple-500', bg: 'bg-purple-50' },
+];
 
 const PREDEFINED_SKILLS = [
   { id: 'medical', label: 'Medical Support', icon: Stethoscope },
@@ -80,6 +100,45 @@ export default function VolunteerDashboard() {
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [customSkill, setCustomSkill] = useState('');
   const [isSavingSkills, setIsSavingSkills] = useState(false);
+  const [topVolunteers, setTopVolunteers] = useState<VolunteerProfile[]>([]);
+  const [currentUserProfile, setCurrentUserProfile] = useState<VolunteerProfile | null>(null);
+
+  // Fetch top volunteers for leaderboard
+  useEffect(() => {
+    const q = query(
+      collection(db, 'users'), 
+      where('role', '==', 'volunteer'),
+      limit(50)
+    );
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const volunteers = snapshot.docs.map(doc => ({
+        uid: doc.id,
+        ...doc.data()
+      })) as VolunteerProfile[];
+      
+      // Sort in memory to avoid composite index requirements during development
+      const sorted = volunteers
+        .sort((a, b) => (b.totalPoints || 0) - (a.totalPoints || 0))
+        .slice(0, 10);
+        
+      setTopVolunteers(sorted);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'users');
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Fetch current user profile for points and badges
+  useEffect(() => {
+    if (!user?.uid) return;
+    const unsubscribe = onSnapshot(doc(db, 'users', user.uid), (doc) => {
+      if (doc.exists()) {
+        setCurrentUserProfile({ uid: doc.id, ...doc.data() } as VolunteerProfile);
+      }
+    });
+    return () => unsubscribe();
+  }, [user?.uid]);
 
   // Fetch tasks from tasks collection
   useEffect(() => {
@@ -110,6 +169,30 @@ export default function VolunteerDashboard() {
 
       await updateDoc(doc(db, 'tasks', taskId), updateData);
       toast.success(`Task ${newStatus} successfully!`);
+      
+      // Award points and badges if completed
+      if (newStatus === 'completed' && user?.uid) {
+        const loadingToast = toast.loading("Awarding your impact points...");
+        try {
+          const task = allTasks.find(t => t.id === taskId);
+          if (task) {
+            const result = await awardPointsAndBadges(user.uid, task.priority);
+            toast.dismiss(loadingToast);
+            if (result) {
+              toast.success(`Amazing! You earned ${result.pointsAdded} points!`, {
+                description: result.newBadgesCount > 0 ? `You also earned ${result.newBadgesCount} new badge(s)!` : "Keep up the great work!",
+                duration: 5000,
+              });
+            }
+          } else {
+            toast.dismiss(loadingToast);
+          }
+        } catch (error) {
+          toast.dismiss(loadingToast);
+          console.error("Failed to award points:", error);
+          toast.error("Failed to award points. Please try again later.");
+        }
+      }
       
       if (newStatus === 'accepted') {
         setActiveSection('accepted');
@@ -255,11 +338,14 @@ export default function VolunteerDashboard() {
   }
 
   const sidebarItems = [
+    { id: 'home', label: 'Overview', icon: LayoutDashboard },
     { id: 'find', label: 'Find Needs', icon: Search },
     { id: 'matched', label: 'Matched Tasks', icon: Zap },
     { id: 'accepted', label: 'Accepted Tasks', icon: BookmarkCheck },
     { id: 'progress', label: 'In Progress Tasks', icon: Clock },
     { id: 'contributions', label: 'Your Contributions', icon: Trophy },
+    { id: 'leaderboard', label: 'Leaderboard', icon: Medal },
+    { id: 'badges', label: 'My Badges', icon: Award },
   ];
 
   return (
@@ -320,44 +406,237 @@ export default function VolunteerDashboard() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="max-w-4xl mx-auto text-center mt-20"
+              className="max-w-5xl mx-auto"
             >
-              <h1 className="text-5xl font-extrabold text-slate-900 mb-6">
-                Volunteer <span className="text-primary">Dashboard</span>
-              </h1>
-              <p className="text-xl text-slate-600 mb-8 leading-relaxed">
-                Your skills are the key to making a difference. Browse needs from NGOs, 
-                get matched with tasks that fit your expertise, and start contributing today.
-              </p>
-              <div className="flex flex-wrap gap-2 justify-center mb-12">
-                {userSkills?.map((skill, i) => (
-                  <span key={i} className="px-3 py-1 bg-primary/10 text-primary rounded-full text-xs font-semibold">
-                    {skill}
-                  </span>
-                ))}
+              <div className="mb-8 text-left">
+                <h2 className="text-4xl font-bold text-slate-900 mb-2">Welcome back!</h2>
+                <p className="text-slate-500 text-lg">You're making a real difference in the community.</p>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-left">
-                <Card className="bg-white/50 backdrop-blur">
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+                <Card className="bg-primary text-primary-foreground shadow-xl border-none overflow-hidden relative group">
+                  <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:scale-110 transition-transform">
+                    <Star className="w-24 h-24" />
+                  </div>
                   <CardHeader>
-                    <Search className="w-8 h-8 text-primary mb-2" />
+                    <CardTitle className="text-sm font-medium opacity-80 uppercase tracking-wider">Total Impact Points</CardTitle>
+                    <div className="text-5xl font-bold mt-2">{currentUserProfile?.totalPoints || 0}</div>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-xs opacity-70">Keep completing tasks to climb the leaderboard!</p>
+                  </CardContent>
+                </Card>
+
+                <Card className="bg-white shadow-md hover:shadow-lg transition-shadow">
+                  <CardHeader>
+                    <CardTitle className="text-sm font-medium text-slate-500 uppercase tracking-wider">Current Rank</CardTitle>
+                    <div className="text-4xl font-bold text-slate-900 mt-2 flex items-baseline gap-2">
+                      #{topVolunteers.findIndex(v => v.uid === user?.uid) + 1 || 'N/A'}
+                      <span className="text-sm font-normal text-slate-400">Global</span>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex items-center gap-2 text-green-600 text-sm font-medium">
+                      <TrendingUp className="w-4 h-4" />
+                      <span>Top {Math.max(1, Math.round(((topVolunteers.findIndex(v => v.uid === user?.uid) + 1) / (topVolunteers.length || 1)) * 100))}% of volunteers</span>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card className="bg-white shadow-md hover:shadow-lg transition-shadow">
+                  <CardHeader>
+                    <CardTitle className="text-sm font-medium text-slate-500 uppercase tracking-wider">Badges Earned</CardTitle>
+                    <div className="text-4xl font-bold text-slate-900 mt-2">
+                      {currentUserProfile?.earnedBadges?.length || 0}
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex -space-x-2 overflow-hidden">
+                      {currentUserProfile?.earnedBadges?.slice(0, 3).map((badge, i) => {
+                        const config = BADGE_CONFIG.find(b => b.id === badge.id);
+                        const Icon = config?.icon || Award;
+                        return (
+                          <div key={i} className={`w-8 h-8 rounded-full border-2 border-white ${config?.bg || 'bg-slate-100'} flex items-center justify-center shadow-sm`}>
+                            <Icon className={`w-4 h-4 ${config?.color || 'text-slate-500'}`} />
+                          </div>
+                        );
+                      })}
+                      {(currentUserProfile?.earnedBadges?.length || 0) > 3 && (
+                        <div className="w-8 h-8 rounded-full border-2 border-white bg-slate-100 flex items-center justify-center text-[10px] font-bold text-slate-500">
+                          +{(currentUserProfile?.earnedBadges?.length || 0) - 3}
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <Card className="bg-white/50 backdrop-blur hover:bg-white transition-colors cursor-pointer group text-left" onClick={() => setActiveSection('find')}>
+                  <CardHeader>
+                    <Search className="w-8 h-8 text-primary mb-2 group-hover:scale-110 transition-transform" />
                     <CardTitle className="text-lg">Find Needs</CardTitle>
-                    <CardDescription>Browse all active NGO requests</CardDescription>
+                    <CardDescription>Browse all available tasks from NGOs</CardDescription>
                   </CardHeader>
                 </Card>
-                <Card className="bg-white/50 backdrop-blur">
+                <Card className="bg-white/50 backdrop-blur hover:bg-white transition-colors cursor-pointer group text-left" onClick={() => setActiveSection('matched')}>
                   <CardHeader>
-                    <Zap className="w-8 h-8 text-amber-500 mb-2" />
+                    <Zap className="w-8 h-8 text-amber-500 mb-2 group-hover:scale-110 transition-transform" />
                     <CardTitle className="text-lg">AI Matching</CardTitle>
                     <CardDescription>Get tasks based on your skills</CardDescription>
                   </CardHeader>
                 </Card>
-                <Card className="bg-white/50 backdrop-blur">
-                  <CardHeader>
-                    <Trophy className="w-8 h-8 text-green-500 mb-2" />
-                    <CardTitle className="text-lg">Track Impact</CardTitle>
-                    <CardDescription>See your total contributions</CardDescription>
+              </div>
+            </motion.div>
+          )}
+
+          {activeSection === 'leaderboard' && (
+            <motion.div
+              key="leaderboard"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="max-w-4xl mx-auto"
+            >
+              <div className="mb-8">
+                <h2 className="text-3xl font-bold text-slate-900 flex items-center gap-3">
+                  <Medal className="w-8 h-8 text-amber-500" />
+                  Global Leaderboard
+                </h2>
+                <p className="text-slate-500">Top volunteers making an impact across the world.</p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                <Card className="bg-white shadow-md border-l-4 border-primary">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-xs font-bold text-slate-400 uppercase tracking-wider">Your Rank</CardTitle>
+                    <div className="text-2xl font-bold text-slate-900">
+                      #{topVolunteers.findIndex(v => v.uid === user?.uid) + 1 || 'N/A'}
+                    </div>
                   </CardHeader>
                 </Card>
+                <Card className="bg-white shadow-md border-l-4 border-amber-500">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-xs font-bold text-slate-400 uppercase tracking-wider">Your Points</CardTitle>
+                    <div className="text-2xl font-bold text-slate-900">
+                      {currentUserProfile?.totalPoints || 0}
+                    </div>
+                  </CardHeader>
+                </Card>
+                <Card className="bg-white shadow-md border-l-4 border-purple-500">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-xs font-bold text-slate-400 uppercase tracking-wider">Your Badges</CardTitle>
+                    <div className="text-2xl font-bold text-slate-900">
+                      {currentUserProfile?.earnedBadges?.length || 0}
+                    </div>
+                  </CardHeader>
+                </Card>
+              </div>
+
+              <Card className="overflow-hidden border-none shadow-xl">
+                <div className="bg-slate-900 text-white p-4 grid grid-cols-12 text-xs font-bold uppercase tracking-widest opacity-70">
+                  <div className="col-span-1 text-center">Rank</div>
+                  <div className="col-span-7">Volunteer</div>
+                  <div className="col-span-2 text-center">Badges</div>
+                  <div className="col-span-2 text-right">Points</div>
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {topVolunteers.length === 0 ? (
+                    <div className="p-12 text-center text-slate-400">
+                      <TrendingUp className="w-12 h-12 mx-auto mb-4 opacity-20" />
+                      <p>No volunteers on the leaderboard yet. Be the first!</p>
+                    </div>
+                  ) : (
+                    topVolunteers.map((v, index) => (
+                      <div 
+                        key={v.uid} 
+                        className={`grid grid-cols-12 p-4 items-center transition-colors ${v.uid === user?.uid ? 'bg-primary/5' : 'bg-white hover:bg-slate-50'}`}
+                      >
+                        <div className="col-span-1 text-center font-mono text-lg font-bold text-slate-400">
+                          {index + 1}
+                        </div>
+                        <div className="col-span-7 flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-500 border-2 border-white shadow-sm">
+                            {v.email?.[0]?.toUpperCase() || '?'}
+                          </div>
+                          <div>
+                            <div className="font-semibold text-slate-900 flex items-center gap-2">
+                              {v.email?.split('@')[0] || 'Anonymous'}
+                              {v.uid === user?.uid && <span className="text-[10px] bg-primary text-primary-foreground px-1.5 py-0.5 rounded-full">You</span>}
+                            </div>
+                            <div className="text-xs text-slate-400">{v.earnedBadges?.length || 0} badges earned</div>
+                          </div>
+                        </div>
+                        <div className="col-span-2 flex justify-center -space-x-1">
+                          {v.earnedBadges?.slice(0, 3).map((badge, i) => {
+                            const config = BADGE_CONFIG.find(b => b.id === badge.id);
+                            const Icon = config?.icon || Award;
+                            return (
+                              <div key={i} className={`w-6 h-6 rounded-full border-2 border-white ${config?.bg || 'bg-slate-100'} flex items-center justify-center shadow-sm`} title={config?.label}>
+                                <Icon className={`w-3 h-3 ${config?.color || 'text-slate-500'}`} />
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="col-span-2 text-right font-mono font-bold text-primary text-xl">
+                          {v.totalPoints || 0}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </Card>
+            </motion.div>
+          )}
+
+          {activeSection === 'badges' && (
+            <motion.div
+              key="badges"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="max-w-5xl mx-auto"
+            >
+              <div className="mb-8">
+                <h2 className="text-3xl font-bold text-slate-900 flex items-center gap-3">
+                  <Award className="w-8 h-8 text-primary" />
+                  Badge Gallery
+                </h2>
+                <p className="text-slate-500">Milestones you've achieved through your service.</p>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+                {BADGE_CONFIG.map((badge) => {
+                  const isEarned = currentUserProfile?.earnedBadges?.find(b => b.id === badge.id);
+                  const Icon = badge.icon;
+                  return (
+                    <Card key={badge.id} className={`relative overflow-hidden transition-all duration-500 ${isEarned ? 'border-primary/20 shadow-lg scale-100' : 'opacity-40 grayscale scale-95 bg-slate-50/50'}`}>
+                      {isEarned && (
+                        <div className="absolute top-0 right-0 p-2">
+                          <CheckCircle2 className="w-5 h-5 text-green-500" />
+                        </div>
+                      )}
+                      <CardHeader className="text-center pb-2">
+                        <div className={`mx-auto w-20 h-20 rounded-2xl ${isEarned ? badge.bg : 'bg-slate-200'} flex items-center justify-center mb-4 shadow-inner rotate-3 group-hover:rotate-0 transition-transform`}>
+                          <Icon className={`w-10 h-10 ${isEarned ? badge.color : 'text-slate-400'}`} />
+                        </div>
+                        <CardTitle className="text-xl">{badge.label}</CardTitle>
+                        <CardDescription className="text-xs mt-1">{badge.description}</CardDescription>
+                      </CardHeader>
+                      <CardContent className="text-center pt-0">
+                        {isEarned ? (
+                          <div className="text-[10px] font-medium text-slate-400 uppercase tracking-widest mt-4">
+                            Earned on {new Date(isEarned.earnedAt).toLocaleDateString()}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] font-bold text-slate-300 uppercase tracking-widest mt-4">
+                            Locked
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  );
+                })}
               </div>
             </motion.div>
           )}
