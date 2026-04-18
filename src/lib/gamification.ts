@@ -11,8 +11,7 @@ export async function awardPointsAndBadges(volunteerId: string, taskPriority: st
   console.log(`Awarding points to ${volunteerId} for ${taskPriority} priority task`);
   try {
     const volunteerRef = doc(db, 'users', volunteerId);
-    // Use getDocFromServer to ensure we have the absolute latest points before incrementing
-    const volunteerSnap = await getDocFromServer(volunteerRef);
+    const volunteerSnap = await getDoc(volunteerRef);
     
     if (!volunteerSnap.exists()) {
       console.error(`Volunteer document not found for ID: ${volunteerId}`);

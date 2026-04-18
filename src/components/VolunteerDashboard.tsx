@@ -43,13 +43,25 @@ import {
   User,
   Plus,
   X,
-  Navigation
+  Navigation,
+  Upload,
+  Loader2,
+  AlertCircle
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { Separator } from '@/components/ui/separator';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
@@ -70,8 +82,11 @@ interface Task {
   description: string;
   priority: 'High' | 'Medium' | 'Low';
   urgency: 'Immediate' | 'Soon' | 'Planned';
-  status: 'pending' | 'accepted' | 'in-progress' | 'completed' | 'cancelled';
+  status: 'pending' | 'accepted' | 'in-progress' | 'pending_approval' | 'completed' | 'cancelled';
   createdAt: Timestamp;
+  proofImageUrl?: string;
+  completionNotes?: string;
+  rejectionReason?: string;
   location?: {
     lat: number;
     lng: number;
@@ -117,6 +132,13 @@ export default function VolunteerDashboard() {
   const [isSavingSkills, setIsSavingSkills] = useState(false);
   const [topVolunteers, setTopVolunteers] = useState<VolunteerProfile[]>([]);
   const [currentUserProfile, setCurrentUserProfile] = useState<VolunteerProfile | null>(null);
+
+  // Photo Verification State
+  const [isSubmitDialogOpen, setIsSubmitDialogOpen] = useState(false);
+  const [submittingTask, setSubmittingTask] = useState<Task | null>(null);
+  const [proofImage, setProofImage] = useState<string | null>(null);
+  const [completionNotes, setCompletionNotes] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
 
   // Fetch top volunteers for leaderboard
   useEffect(() => {
@@ -222,33 +244,81 @@ export default function VolunteerDashboard() {
       }
 
       await updateDoc(doc(db, 'tasks', taskId), updateData);
-      toast.success(`Task ${newStatus} successfully!`);
-      
-      // Award points and badges if completed
-      if (newStatus === 'completed' && user?.uid) {
-        const loadingToast = toast.loading("Awarding your impact points...");
-        try {
-          const task = allTasks.find(t => t.id === taskId);
-          if (task) {
-            const result = await awardPointsAndBadges(user.uid, task.priority);
-            toast.dismiss(loadingToast);
-            if (result) {
-              toast.success(`Amazing! You earned ${result.pointsAdded} points!`, {
-                description: result.newBadgesCount > 0 ? `You also earned ${result.newBadgesCount} new badge(s)!` : "Keep up the great work!",
-                duration: 5000,
-              });
-            }
-          } else {
-            toast.dismiss(loadingToast);
-          }
-        } catch (error) {
-          toast.dismiss(loadingToast);
-          console.error("Failed to award points:", error);
-          toast.error("Failed to award points. Please try again later.");
-        }
-      }
+      toast.success(`Task status updated!`);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `tasks/${taskId}`);
+    }
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Image too large. Please select an image under 2MB.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      // Basic compression: draw to canvas and get smaller dataUrl
+      const img = new Image();
+      img.src = reader.result as string;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 800;
+        const MAX_HEIGHT = 600;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          }
+        } else {
+          if (height > MAX_HEIGHT) {
+            width *= MAX_HEIGHT / height;
+            height = MAX_HEIGHT;
+          }
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        setProofImage(dataUrl);
+      };
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSubmitVerification = async () => {
+    if (!submittingTask || !proofImage) {
+      toast.error("Please provide a photo as proof of completion.");
+      return;
+    }
+
+    setIsUploading(true);
+    try {
+      await updateDoc(doc(db, 'tasks', submittingTask.id), {
+        status: 'pending_approval',
+        proofImageUrl: proofImage,
+        completionNotes: completionNotes,
+        updatedAt: serverTimestamp()
+      });
+      
+      toast.success("Task submitted for verification! Point awarding is pending NGO approval.");
+      setIsSubmitDialogOpen(false);
+      setSubmittingTask(null);
+      setProofImage(null);
+      setCompletionNotes('');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `tasks/${submittingTask.id}`);
+      toast.error("Failed to submit verification.");
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -894,18 +964,20 @@ export default function VolunteerDashboard() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {allTasks.filter(t => t.volunteerId === user?.uid && t.status === (
-                  activeSection === 'accepted' ? 'accepted' : 
-                  activeSection === 'progress' ? 'in-progress' : 'completed'
+                {allTasks.filter(t => t.volunteerId === user?.uid && (
+                  activeSection === 'accepted' ? t.status === 'accepted' : 
+                  activeSection === 'progress' ? t.status === 'in-progress' : 
+                  (t.status === 'completed' || t.status === 'pending_approval')
                 )).length === 0 ? (
                   <div className="col-span-full py-20 text-center text-slate-400">
                     <p>No tasks found in this section.</p>
                   </div>
                 ) : (
                   allTasks
-                    .filter(t => t.volunteerId === user?.uid && t.status === (
-                      activeSection === 'accepted' ? 'accepted' : 
-                      activeSection === 'progress' ? 'in-progress' : 'completed'
+                    .filter(t => t.volunteerId === user?.uid && (
+                      activeSection === 'accepted' ? t.status === 'accepted' : 
+                      activeSection === 'progress' ? t.status === 'in-progress' : 
+                      (t.status === 'completed' || t.status === 'pending_approval')
                     ))
                     .map((task) => (
                       <Card key={task.id} className="border-l-4" 
@@ -932,6 +1004,15 @@ export default function VolunteerDashboard() {
                           <p className="text-sm text-slate-600">
                             {task.description}
                           </p>
+                          {task.rejectionReason && task.status === 'in-progress' && (
+                            <div className="mt-3 p-3 bg-red-50 border border-red-100 rounded-lg flex gap-2 items-start shrink-0">
+                              <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
+                              <div className="space-y-1">
+                                <p className="text-[10px] font-bold text-red-700 uppercase">Revision Requested:</p>
+                                <p className="text-[11px] text-red-600 line-clamp-3 leading-relaxed">{task.rejectionReason}</p>
+                              </div>
+                            </div>
+                          )}
                         </CardContent>
                         <CardFooter className="flex flex-col gap-2">
                           {task.status === 'accepted' && (
@@ -949,7 +1030,10 @@ export default function VolunteerDashboard() {
                           )}
                           {task.status === 'in-progress' && (
                             <div className="w-full flex gap-2">
-                              <Button className="flex-1 bg-green-600 hover:bg-green-700" onClick={() => handleUpdateTaskStatus(task.id, 'completed')}>
+                              <Button className="flex-1 bg-green-600 hover:bg-green-700" onClick={() => {
+                                setSubmittingTask(task);
+                                setIsSubmitDialogOpen(true);
+                              }}>
                                 <CheckCircle2 className="w-4 h-4 mr-2" />
                                 Complete Task
                               </Button>
@@ -958,6 +1042,17 @@ export default function VolunteerDashboard() {
                                   <Navigation className="w-4 h-4" />
                                 </Button>
                               )}
+                            </div>
+                          )}
+                          {task.status === 'pending_approval' && (
+                            <div className="w-full space-y-2">
+                              <div className="flex items-center justify-center gap-2 text-amber-600 font-medium bg-amber-50 py-2 rounded">
+                                <Clock className="w-4 h-4" />
+                                Pending NGO Approval
+                              </div>
+                              <p className="text-[10px] text-slate-400 text-center italic">
+                                Your points will be awarded once the NGO verifies your photo proof.
+                              </p>
                             </div>
                           )}
                           {task.status === 'completed' && (
@@ -1085,6 +1180,70 @@ export default function VolunteerDashboard() {
           )}
         </AnimatePresence>
       </main>
+
+      <Dialog open={isSubmitDialogOpen} onOpenChange={setIsSubmitDialogOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Verify Completion</DialogTitle>
+            <DialogDescription>
+              Upload a photo as proof of work done and add any final notes for the NGO.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Photo Proof (Required)</Label>
+              <div 
+                className={`border-2 border-dashed rounded-xl h-48 flex flex-col items-center justify-center gap-2 transition-colors cursor-pointer overflow-hidden relative ${
+                  proofImage ? 'border-green-500 bg-green-50/10' : 'border-slate-200 hover:border-primary/50 hover:bg-slate-50'
+                }`}
+                onClick={() => document.getElementById('photo-upload')?.click()}
+              >
+                {proofImage ? (
+                  <img src={proofImage} alt="Proof" className="w-full h-full object-cover" />
+                ) : (
+                  <>
+                    <Upload className="w-8 h-8 text-slate-300" />
+                    <span className="text-sm text-slate-400">Click to upload or take photo</span>
+                    <span className="text-[10px] text-slate-300 uppercase font-bold tracking-widest">JPG/PNG, max 2MB</span>
+                  </>
+                )}
+                <input 
+                  id="photo-upload" 
+                  type="file" 
+                  accept="image/*" 
+                  className="hidden" 
+                  onChange={handleImageUpload} 
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Completion Notes</Label>
+              <Textarea 
+                placeholder="Briefly describe what was accomplished..."
+                value={completionNotes}
+                onChange={(e) => setCompletionNotes(e.target.value)}
+                className="min-h-[100px]"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsSubmitDialogOpen(false)}>Cancel</Button>
+            <Button 
+              onClick={handleSubmitVerification} 
+              disabled={isUploading || !proofImage}
+              className="px-8"
+            >
+              {isUploading ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Submitting...
+                </>
+              ) : "Submit for Verification"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

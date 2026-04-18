@@ -25,7 +25,8 @@ import {
   Users,
   MapPin,
   Search,
-  Loader2
+  Loader2,
+  Award
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
@@ -56,7 +57,7 @@ import MapComponent from './MapComponent';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
-type Section = 'home' | 'upload' | 'previous' | 'progress' | 'completed';
+type Section = 'home' | 'upload' | 'previous' | 'progress' | 'completed' | 'verifications';
 
 interface AnalysisResult {
   title: string;
@@ -90,9 +91,12 @@ interface Task {
   description: string;
   priority: 'High' | 'Medium' | 'Low';
   urgency: 'Immediate' | 'Soon' | 'Planned';
-  status: 'pending' | 'accepted' | 'in-progress' | 'completed' | 'cancelled';
+  status: 'pending' | 'accepted' | 'in-progress' | 'pending_approval' | 'completed' | 'cancelled';
   createdAt: Timestamp;
   updatedAt: Timestamp;
+  proofImageUrl?: string;
+  completionNotes?: string;
+  rejectionReason?: string;
   location?: {
     lat: number;
     lng: number;
@@ -120,6 +124,12 @@ export default function NGODashboard() {
   const [isGeocoding, setIsGeocoding] = useState(false);
   const [isReverseGeocoding, setIsReverseGeocoding] = useState(false);
   
+  // Verification state
+  const [isReviewDialogOpen, setIsReviewDialogOpen] = useState(false);
+  const [reviewingTask, setReviewingTask] = useState<Task | null>(null);
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [isProcessingApproval, setIsProcessingApproval] = useState(false);
+
   // Editing state
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [editTitle, setEditTitle] = useState('');
@@ -289,6 +299,68 @@ export default function NGODashboard() {
     }
   };
 
+  const handleApproveTask = async (task: Task) => {
+    console.log("Approving task:", task.id);
+    setIsProcessingApproval(true);
+    try {
+      // 1. Update task status
+      await updateDoc(doc(db, 'tasks', task.id), {
+        status: 'completed',
+        updatedAt: serverTimestamp()
+      });
+      console.log("Task status updated to completed");
+
+      // 2. Award points to the volunteer
+      if (task.volunteerId) {
+        console.log("Awarding points to volunteer:", task.volunteerId);
+        const result = await awardPointsAndBadges(task.volunteerId, task.priority);
+        if (result) {
+          toast.success(`Task verified! Volunteer awarded ${result.pointsAdded} points.`);
+        } else {
+          toast.success(`Task verified and completed!`);
+        }
+      }
+
+      setIsReviewDialogOpen(false);
+      setReviewingTask(null);
+    } catch (error) {
+      console.error("Approval error:", error);
+      handleFirestoreError(error, OperationType.UPDATE, `tasks/${task.id}`);
+      toast.error("Failed to approve task.");
+    } finally {
+      setIsProcessingApproval(false);
+    }
+  };
+
+  const handleRejectTask = async (task: Task) => {
+    console.log("Rejecting task:", task.id, "Reason:", rejectionReason);
+    if (!rejectionReason.trim()) {
+      toast.error("Please provide a reason for rejection.");
+      return;
+    }
+
+    setIsProcessingApproval(true);
+    try {
+      await updateDoc(doc(db, 'tasks', task.id), {
+        status: 'in-progress', // Send back to in-progress
+        rejectionReason: rejectionReason,
+        updatedAt: serverTimestamp()
+      });
+      console.log("Task rejected successfully");
+
+      toast.success("Task sent back to volunteer for corrections.");
+      setIsReviewDialogOpen(false);
+      setReviewingTask(null);
+      setRejectionReason('');
+    } catch (error) {
+      console.error("Rejection error:", error);
+      handleFirestoreError(error, OperationType.UPDATE, `tasks/${task.id}`);
+      toast.error("Failed to reject task.");
+    } finally {
+      setIsProcessingApproval(false);
+    }
+  };
+
   const handleAnalyze = async () => {
     if (!reportText.trim()) {
       toast.error("Please enter some report data to analyze.");
@@ -411,6 +483,7 @@ export default function NGODashboard() {
     { id: 'previous', label: 'Previous Uploads', icon: History },
     { id: 'progress', label: 'In Progress Works', icon: Clock },
     { id: 'completed', label: 'Completed Tasks', icon: CheckCircle2 },
+    { id: 'verifications', label: 'Verifications', icon: Award },
   ];
 
   return (
@@ -502,6 +575,93 @@ export default function NGODashboard() {
                     <CardDescription>Visualize your achievements</CardDescription>
                   </CardHeader>
                 </Card>
+              </div>
+
+              {tasks.filter(t => t.status === 'pending_approval').length > 0 && (
+                <div className="mt-12 text-left">
+                  <h3 className="text-xl font-bold text-slate-900 mb-4 flex items-center gap-2">
+                    <AlertCircle className="w-5 h-5 text-amber-500" />
+                    Action Required: Pending Verifications
+                  </h3>
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 flex items-center justify-between">
+                    <div>
+                      <p className="text-amber-800 font-semibold text-lg">
+                        You have {tasks.filter(t => t.status === 'pending_approval').length} tasks awaiting verification.
+                      </p>
+                      <p className="text-amber-700/70 text-sm">
+                        Review volunteer proof to award points and finalize impact.
+                      </p>
+                    </div>
+                    <Button onClick={() => setActiveSection('verifications')} className="bg-amber-600 hover:bg-amber-700">
+                      Go to Verifications
+                      <ChevronRight className="ml-2 w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          )}
+
+          {activeSection === 'verifications' && (
+            <motion.div
+              key="verifications"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="max-w-5xl mx-auto"
+            >
+              <div className="mb-8">
+                <h2 className="text-3xl font-bold text-slate-900">Verification Center</h2>
+                <p className="text-slate-500">Review proof submitted by volunteers to verify task completion.</p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {tasks.filter(t => t.status === 'pending_approval').length === 0 ? (
+                  <div className="col-span-full py-20 text-center text-slate-400 bg-white rounded-2xl border-2 border-dashed">
+                    <Award className="w-12 h-12 mx-auto mb-4 opacity-20" />
+                    <p className="text-lg font-medium">All caught up!</p>
+                    <p className="text-sm">New submissions will appear here for your review.</p>
+                  </div>
+                ) : (
+                  tasks.filter(t => t.status === 'pending_approval').map((task) => (
+                    <Card key={task.id} className="overflow-hidden border-2 border-amber-100 hover:border-amber-200 transition-all shadow-sm hover:shadow-md">
+                      {task.proofImageUrl && (
+                        <div className="h-40 overflow-hidden relative group">
+                          <img 
+                            src={task.proofImageUrl} 
+                            alt="Proof" 
+                            className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                            referrerPolicy="no-referrer"
+                          />
+                          <div className="absolute inset-0 bg-black/20 group-hover:bg-black/10 transition-colors" />
+                        </div>
+                      )}
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-lg truncate">{task.title}</CardTitle>
+                        <CardDescription className="flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          Submitted {task.updatedAt?.toDate().toLocaleDateString()}
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent className="pb-4">
+                        <p className="text-sm text-slate-600 line-clamp-2">
+                          {task.completionNotes || "No notes provided."}
+                        </p>
+                      </CardContent>
+                      <CardFooter className="pt-0 border-t bg-amber-50/30 p-4">
+                        <Button 
+                          className="w-full bg-amber-600 hover:bg-amber-700"
+                          onClick={() => {
+                            setReviewingTask(task);
+                            setIsReviewDialogOpen(true);
+                          }}
+                        >
+                          Review Proof
+                        </Button>
+                      </CardFooter>
+                    </Card>
+                  ))
+                )}
               </div>
             </motion.div>
           )}
@@ -954,44 +1114,148 @@ export default function NGODashboard() {
                     ))
                 )}
               </div>
-
-              {/* Edit Dialog */}
-              <Dialog open={!!editingTask} onOpenChange={(open) => !open && setEditingTask(null)}>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Edit Task Details</DialogTitle>
-                    <DialogDescription>
-                      Update the title and description for this task.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="space-y-4 py-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="title">Task Title</Label>
-                      <Input 
-                        id="title" 
-                        value={editTitle} 
-                        onChange={(e) => setEditTitle(e.target.value)} 
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="desc">Description</Label>
-                      <Textarea 
-                        id="desc" 
-                        value={editDescription} 
-                        onChange={(e) => setEditDescription(e.target.value)} 
-                        rows={4}
-                      />
-                    </div>
-                  </div>
-                  <DialogFooter>
-                    <Button variant="outline" onClick={() => setEditingTask(null)}>Cancel</Button>
-                    <Button onClick={handleSaveTaskEdit}>Save Changes</Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Edit Dialog */}
+        <Dialog open={!!editingTask} onOpenChange={(open) => !open && setEditingTask(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Edit Task Details</DialogTitle>
+              <DialogDescription>
+                Update the title and description for this task.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="title">Task Title</Label>
+                <Input 
+                  id="title" 
+                  value={editTitle} 
+                  onChange={(e) => setEditTitle(e.target.value)} 
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="desc">Description</Label>
+                <Textarea 
+                  id="desc" 
+                  value={editDescription} 
+                  onChange={(e) => setEditDescription(e.target.value)} 
+                  rows={4}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEditingTask(null)}>Cancel</Button>
+              <Button onClick={handleSaveTaskEdit}>Save Changes</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Review Dialog */}
+        <Dialog open={isReviewDialogOpen} onOpenChange={setIsReviewDialogOpen}>
+          <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Award className="w-5 h-5 text-amber-600" />
+                Review Task Completion
+              </DialogTitle>
+              <DialogDescription>
+                Verify the proof provided by the volunteer to award points.
+              </DialogDescription>
+            </DialogHeader>
+            
+            {reviewingTask && (
+              <div className="space-y-6 py-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-4">
+                    <div>
+                      <Label className="text-xs text-slate-400 uppercase font-bold tracking-wider">Proof Image</Label>
+                      <div className="mt-2 rounded-xl overflow-hidden border-2 border-slate-100 shadow-inner bg-slate-50 aspect-video flex items-center justify-center">
+                        {reviewingTask.proofImageUrl ? (
+                          <img 
+                            src={reviewingTask.proofImageUrl} 
+                            alt="Completion Proof" 
+                            className="w-full h-full object-cover" 
+                          />
+                        ) : (
+                          <div className="text-slate-400">No image provided</div>
+                        )}
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <Label className="text-xs text-slate-400 uppercase font-bold tracking-wider">Volunteer Notes</Label>
+                      <div className="mt-2 p-4 rounded-xl bg-slate-50 border border-slate-100 text-sm italic text-slate-700 min-h-[100px]">
+                        "{reviewingTask.completionNotes || "No notes provided by volunteer."}"
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="p-4 rounded-xl border-2 border-primary/10 bg-primary/5">
+                      <Label className="text-xs text-primary uppercase font-bold tracking-wider">Original Task</Label>
+                      <h4 className="font-bold text-slate-900 mt-1">{reviewingTask.title}</h4>
+                      <p className="text-xs text-slate-600 mt-2 line-clamp-4">{reviewingTask.description}</p>
+                      <div className="flex gap-2 mt-4">
+                        <span className="px-2 py-0.5 rounded bg-primary/10 text-primary text-[10px] font-bold">
+                          {reviewingTask.priority} Priority
+                        </span>
+                        <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-bold">
+                          {reviewingTask.urgency}
+                        </span>
+                      </div>
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-2">
+                      <Label className="text-xs text-red-500 uppercase font-bold tracking-wider">Rejection Reason (If needed)</Label>
+                      <Textarea 
+                        placeholder="Explain why the proof is insufficient..."
+                        value={rejectionReason}
+                        onChange={(e) => setRejectionReason(e.target.value)}
+                        className="text-sm"
+                      />
+                      <p className="text-[10px] text-slate-400">
+                        Rejecting will send the task back to the volunteer's 'In Progress' list.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button 
+                variant="outline" 
+                onClick={() => setIsReviewDialogOpen(false)}
+                disabled={isProcessingApproval}
+              >
+                Wait for Now
+              </Button>
+              <div className="flex gap-2">
+                <Button 
+                  variant="destructive"
+                  onClick={() => handleRejectTask(reviewingTask!)}
+                  disabled={isProcessingApproval || !rejectionReason.trim()}
+                >
+                  {isProcessingApproval ? <Loader2 className="animate-spin w-4 h-4 mr-2" /> : <XCircle className="w-4 h-4 mr-2" />}
+                  Reject Proof
+                </Button>
+                <Button 
+                  className="bg-green-600 hover:bg-green-700"
+                  onClick={() => handleApproveTask(reviewingTask!)}
+                  disabled={isProcessingApproval}
+                >
+                  {isProcessingApproval ? <Loader2 className="animate-spin w-4 h-4 mr-2" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
+                  Approve & Award Points
+                </Button>
+              </div>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </main>
     </div>
   );

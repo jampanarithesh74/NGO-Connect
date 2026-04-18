@@ -73,6 +73,8 @@ service cloud.firestore {
       allow update: if (isOwner(userId) && 
                       request.resource.data.role == resource.data.role &&
                       request.resource.data.createdAt == resource.data.createdAt) ||
+                      (isNGO() && resource.data.role == 'volunteer' && 
+                       request.resource.data.diff(resource.data).affectedKeys().hasOnly(['totalPoints', 'earnedBadges', 'updatedAt'])) ||
                       isAdmin();
     }
 
