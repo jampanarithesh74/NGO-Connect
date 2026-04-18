@@ -73,7 +73,7 @@ service cloud.firestore {
       allow update: if (isOwner(userId) && 
                       request.resource.data.role == resource.data.role &&
                       request.resource.data.createdAt == resource.data.createdAt) ||
-                      (isNGO() && request.resource.data.diff(resource.data).affectedKeys().hasAny(['totalPoints', 'earnedBadges', 'updatedAt']));
+                      isAdmin();
     }
 
     match /reports/{reportId} {
@@ -81,7 +81,7 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow create: if isNGO() && request.resource.data.ngoId == request.auth.uid;
       allow update: if (isNGO() && resource.data.ngoId == request.auth.uid) || isAdmin();
-      allow delete: if isNGO() && resource.data.ngoId == request.auth.uid;
+      allow delete: if (isNGO() && resource.data.ngoId == request.auth.uid) || isAdmin();
     }
 
     match /tasks/{taskId} {
@@ -92,14 +92,12 @@ service cloud.firestore {
         (isVolunteer() && (
           // Volunteer can accept a pending task
           (resource.data.status == 'pending' && request.resource.data.status == 'accepted' && request.resource.data.volunteerId == request.auth.uid) ||
-          // Volunteer can start an accepted task
-          (resource.data.status == 'accepted' && resource.data.volunteerId == request.auth.uid && request.resource.data.status == 'in-progress') ||
-          // Volunteer can complete an in-progress task
-          (resource.data.status == 'in-progress' && resource.data.volunteerId == request.auth.uid && request.resource.data.status == 'completed')
+          // Volunteer can update tasks they are assigned to (start, complete)
+          (resource.data.volunteerId == request.auth.uid && request.resource.data.volunteerId == request.auth.uid)
         )) ||
         isAdmin()
       );
-      allow delete: if isNGO() && resource.data.ngoId == request.auth.uid;
+      allow delete: if (isNGO() && resource.data.ngoId == request.auth.uid) || isAdmin();
     }
   }
 }

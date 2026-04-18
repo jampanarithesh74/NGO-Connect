@@ -22,7 +22,10 @@ import {
   Trash2,
   XCircle,
   Play,
-  Users
+  Users,
+  MapPin,
+  Search,
+  Loader2
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
@@ -49,6 +52,8 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 
+import MapComponent from './MapComponent';
+
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 type Section = 'home' | 'upload' | 'previous' | 'progress' | 'completed';
@@ -66,6 +71,14 @@ interface Report {
   analysis: AnalysisResult[];
   status: 'pending' | 'processed';
   createdAt: Timestamp;
+  location?: {
+    lat: number;
+    lng: number;
+    area: string;
+    landmark?: string;
+    district: string;
+    state: string;
+  };
 }
 
 interface Task {
@@ -80,6 +93,14 @@ interface Task {
   status: 'pending' | 'accepted' | 'in-progress' | 'completed' | 'cancelled';
   createdAt: Timestamp;
   updatedAt: Timestamp;
+  location?: {
+    lat: number;
+    lng: number;
+    area: string;
+    landmark?: string;
+    district: string;
+    state: string;
+  };
 }
 
 export default function NGODashboard() {
@@ -91,6 +112,13 @@ export default function NGODashboard() {
   const [previousReports, setPreviousReports] = useState<Report[]>([]);
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [selectedLocation, setSelectedLocation] = useState<{ lat?: number; lng?: number; area?: string; landmark?: string; district?: string; state?: string } | null>(null);
+  const [area, setArea] = useState('');
+  const [landmark, setLandmark] = useState('');
+  const [district, setDistrict] = useState('');
+  const [state, setState] = useState('');
+  const [isGeocoding, setIsGeocoding] = useState(false);
+  const [isReverseGeocoding, setIsReverseGeocoding] = useState(false);
   
   // Editing state
   const [editingTask, setEditingTask] = useState<Task | null>(null);
@@ -139,6 +167,71 @@ export default function NGODashboard() {
       unsubscribeTasks();
     };
   }, [user]);
+
+  const handleApplyManualLocation = () => {
+    if (!area.trim() || !district.trim() || !state.trim()) {
+      toast.error("Please fill in at least Area, District, and State.");
+      return;
+    }
+    
+    setSelectedLocation({ 
+      ...selectedLocation,
+      area: area.trim(),
+      landmark: landmark.trim(),
+      district: district.trim(),
+      state: state.trim()
+    });
+    toast.success("Location details saved!");
+  };
+
+  const handleReverseGeocode = async (lat: number, lng: number) => {
+    setIsReverseGeocoding(true);
+    try {
+      const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1`);
+      const data = await response.json();
+      
+      if (data && data.address) {
+        const addr = data.address;
+        setArea(addr.suburb || addr.neighbourhood || addr.road || addr.village || '');
+        setDistrict(addr.city_district || addr.district || addr.city || addr.town || '');
+        setState(addr.state || '');
+        toast.success("Address details updated from map pin!");
+      }
+    } catch (error) {
+      console.error("Reverse geocoding error:", error);
+    } finally {
+      setIsReverseGeocoding(false);
+    }
+  };
+
+  const handleGeocode = async () => {
+    if (!area.trim() && !district.trim() && !state.trim()) {
+      toast.error("Please enter some address details to search.");
+      return;
+    }
+
+    setIsGeocoding(true);
+    try {
+      const query = `${area} ${landmark} ${district} ${state}`.trim();
+      const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`);
+      const data = await response.json();
+
+      if (data && data.length > 0) {
+        const result = data[0];
+        const lat = parseFloat(result.lat);
+        const lng = parseFloat(result.lon);
+        setSelectedLocation(prev => ({ ...prev, lat, lng }));
+        toast.success("Location pinned on map based on your text!");
+      } else {
+        toast.error("Could not find that location on the map. Please try a different landmark or area.");
+      }
+    } catch (error) {
+      console.error("Geocoding error:", error);
+      toast.error("Failed to search location. Please try pinning manually.");
+    } finally {
+      setIsGeocoding(false);
+    }
+  };
 
   const handleUpdateTaskStatus = async (taskId: string, newStatus: Task['status']) => {
     try {
@@ -202,13 +295,44 @@ export default function NGODashboard() {
       return;
     }
 
+    const locationData = {
+      lat: selectedLocation?.lat,
+      lng: selectedLocation?.lng,
+      area: area.trim(),
+      landmark: landmark.trim(),
+      district: district.trim(),
+      state: state.trim()
+    };
+
+    // Lenient validation: Either text address OR map pin is enough
+    const hasTextAddress = locationData.area && locationData.district && locationData.state;
+    const hasMapPin = locationData.lat !== undefined && locationData.lng !== undefined;
+
+    if (!hasTextAddress && !hasMapPin) {
+      toast.error("Please provide at least a map pin or address details (Area, District, State).");
+      return;
+    }
+
+    // Sanitize location data for Firestore (remove undefined values)
+    const sanitizedLocation: any = {};
+    if (locationData.lat !== undefined) sanitizedLocation.lat = locationData.lat;
+    if (locationData.lng !== undefined) sanitizedLocation.lng = locationData.lng;
+    if (locationData.area) sanitizedLocation.area = locationData.area;
+    if (locationData.landmark) sanitizedLocation.landmark = locationData.landmark;
+    if (locationData.district) sanitizedLocation.district = locationData.district;
+    if (locationData.state) sanitizedLocation.state = locationData.state;
+
     setIsAnalyzing(true);
     try {
+      const locationContext = `Location Context: Area: ${locationData.area}, Landmark: ${locationData.landmark}, District: ${locationData.district}, State: ${locationData.state}`;
+
       const prompt = `
         Analyze the following NGO report and extract key action items or tasks. 
+        ${locationContext}
+        
         For each task, provide:
         1. A concise title.
-        2. A brief description.
+        2. A brief description (incorporate location context if relevant).
         3. Priority (High, Medium, or Low).
         4. Urgency (Immediate, Soon, or Planned).
         
@@ -232,19 +356,22 @@ export default function NGODashboard() {
         setAnalysisResults(parsedResults);
         
         // Save Report
-        const reportRef = await addDoc(collection(db, 'reports'), {
+        const reportData: any = {
           ngoId: user?.uid,
           content: reportText,
           analysis: parsedResults,
           status: 'processed',
           createdAt: serverTimestamp(),
-        });
+          location: sanitizedLocation
+        };
+
+        const reportRef = await addDoc(collection(db, 'reports'), reportData);
 
         // Save individual tasks using a batch
         const batch = writeBatch(db);
         parsedResults.forEach((item) => {
           const taskRef = doc(collection(db, 'tasks'));
-          batch.set(taskRef, {
+          const taskData: any = {
             reportId: reportRef.id,
             ngoId: user?.uid,
             title: item.title,
@@ -253,13 +380,21 @@ export default function NGODashboard() {
             urgency: item.urgency,
             status: 'pending',
             createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          });
+            updatedAt: serverTimestamp(),
+            location: sanitizedLocation
+          };
+
+          batch.set(taskRef, taskData);
         });
         await batch.commit();
         
         toast.success("Analysis complete and tasks generated!");
         setReportText(''); // Clear input after success
+        setSelectedLocation(null); // Reset location
+        setArea('');
+        setLandmark('');
+        setDistrict('');
+        setState('');
       } else {
         throw new Error("Could not parse AI response");
       }
@@ -384,43 +519,165 @@ export default function NGODashboard() {
                 <p className="text-slate-500">Submit your NGO report for AI-powered priority analysis.</p>
               </div>
 
-              <Card className="mb-8">
-                <CardHeader>
-                  <CardTitle>NGO Report Input</CardTitle>
-                  <CardDescription>
-                    Paste your field reports, meeting notes, or project updates below.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="report">Report Content</Label>
-                    <textarea
-                      id="report"
-                      className="w-full min-h-[200px] p-4 rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                      placeholder="e.g., We visited the rural health center today. There is a critical shortage of clean water and basic medical supplies. Three volunteers are needed for next week's vaccination drive..."
-                      value={reportText}
-                      onChange={(e) => setReportText(e.target.value)}
-                    />
-                  </div>
-                  <Button 
-                    className="w-full py-6 text-lg" 
-                    onClick={handleAnalyze}
-                    disabled={isAnalyzing}
-                  >
-                    {isAnalyzing ? (
-                      <>
-                        <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
-                        Analyzing with AI...
-                      </>
-                    ) : (
-                      <>
-                        Analyse Data
-                        <Send className="ml-2 h-5 w-5" />
-                      </>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                <Card className="h-full">
+                  <CardHeader>
+                    <CardTitle>NGO Report Input</CardTitle>
+                    <CardDescription>
+                      Paste your field reports, meeting notes, or project updates below.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="report">Report Content</Label>
+                      <textarea
+                        id="report"
+                        className="w-full min-h-[300px] p-4 rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                        placeholder="e.g., We visited the rural health center today. There is a critical shortage of clean water and basic medical supplies. Three volunteers are needed for next week's vaccination drive..."
+                        value={reportText}
+                        onChange={(e) => setReportText(e.target.value)}
+                      />
+                    </div>
+                    <Button 
+                      className="w-full py-6 text-lg" 
+                      onClick={handleAnalyze}
+                      disabled={isAnalyzing || !reportText.trim()}
+                    >
+                      {isAnalyzing ? (
+                        <>
+                          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></div>
+                          Analyzing with AI...
+                        </>
+                      ) : (
+                        <>
+                          Analyse Data
+                          <Send className="ml-2 h-5 w-5" />
+                        </>
+                      )}
+                    </Button>
+                  </CardContent>
+                </Card>
+
+                <Card className="h-full">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <MapPin className="w-5 h-5 text-primary" />
+                      Location Details
+                    </CardTitle>
+                    <CardDescription>
+                      Provide an address or pin the location on the map.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-[10px] uppercase text-slate-400">Area / Street</Label>
+                        <Input 
+                          placeholder="e.g. MG Road" 
+                          value={area}
+                          onChange={(e) => setArea(e.target.value)}
+                          className="h-9 text-sm"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[10px] uppercase text-slate-400">Nearest Landmark</Label>
+                        <Input 
+                          placeholder="e.g. Near Post Office" 
+                          value={landmark}
+                          onChange={(e) => setLandmark(e.target.value)}
+                          className="h-9 text-sm"
+                        />
+                      </div>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-[10px] uppercase text-slate-400">District</Label>
+                        <Input 
+                          placeholder="e.g. Pune" 
+                          value={district}
+                          onChange={(e) => setDistrict(e.target.value)}
+                          className="h-9 text-sm"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-[10px] uppercase text-slate-400">State</Label>
+                        <Input 
+                          placeholder="e.g. Maharashtra" 
+                          value={state}
+                          onChange={(e) => setState(e.target.value)}
+                          className="h-9 text-sm"
+                        />
+                      </div>
+                    </div>
+
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      className="w-full h-9 text-xs border-dashed border-primary/50 text-primary hover:bg-primary/5"
+                      onClick={handleGeocode}
+                      disabled={isGeocoding}
+                    >
+                      {isGeocoding ? (
+                        <Loader2 className="w-3 h-3 mr-2 animate-spin" />
+                      ) : (
+                        <Search className="w-3 h-3 mr-2" />
+                      )}
+                      Find on Map from Address
+                    </Button>
+
+                    <Separator />
+
+                    <div className="space-y-2">
+                      <Label className="text-[10px] uppercase text-slate-400">Visual Pin {isReverseGeocoding && "(Updating address...)"}</Label>
+                      <div className="h-[200px] rounded-xl overflow-hidden border-2 border-slate-200 relative group">
+                        <MapComponent 
+                          isPicker={true}
+                          onLocationSelect={(lat, lng) => {
+                            setSelectedLocation(prev => ({ ...prev, lat, lng }));
+                            handleReverseGeocode(lat, lng);
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {(area || district || state || selectedLocation?.lat) && (
+                      <div className="flex flex-col gap-1 text-sm text-green-600 font-medium bg-green-50 p-3 rounded-lg border border-green-100">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Location Set</span>
+                          <Button 
+                            variant="ghost" 
+                            size="sm" 
+                            className="ml-auto h-6 text-xs hover:bg-green-100"
+                            onClick={() => {
+                              setSelectedLocation(null);
+                              setArea('');
+                              setLandmark('');
+                              setDistrict('');
+                              setState('');
+                            }}
+                          >
+                            Clear All
+                          </Button>
+                        </div>
+                        <div className="text-[10px] text-green-500 ml-6 space-y-1">
+                          {area && district && state && (
+                            <p className="text-green-600 font-bold">
+                              ✓ {area}, {district}, {state}
+                            </p>
+                          )}
+                          {selectedLocation?.lat && (
+                            <p className="text-green-600 font-bold">
+                              ✓ Map pin placed ({selectedLocation.lat.toFixed(4)}, {selectedLocation.lng.toFixed(4)})
+                            </p>
+                          )}
+                        </div>
+                      </div>
                     )}
-                  </Button>
-                </CardContent>
-              </Card>
+                  </CardContent>
+                </Card>
+              </div>
 
               {analysisResults.length > 0 && (
                 <div className="space-y-6">

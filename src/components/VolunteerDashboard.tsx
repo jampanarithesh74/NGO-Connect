@@ -39,7 +39,11 @@ import {
   Medal,
   Award,
   TrendingUp,
-  Star
+  Star,
+  User,
+  Plus,
+  X,
+  Navigation
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
@@ -51,9 +55,11 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
 import { awardPointsAndBadges } from '@/src/lib/gamification';
 
+import MapComponent from './MapComponent';
+
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
-type Section = 'home' | 'find' | 'matched' | 'accepted' | 'progress' | 'contributions' | 'leaderboard' | 'badges';
+type Section = 'home' | 'find' | 'matched' | 'accepted' | 'progress' | 'contributions' | 'leaderboard' | 'badges' | 'map' | 'profile';
 
 interface Task {
   id: string;
@@ -66,6 +72,14 @@ interface Task {
   urgency: 'Immediate' | 'Soon' | 'Planned';
   status: 'pending' | 'accepted' | 'in-progress' | 'completed' | 'cancelled';
   createdAt: Timestamp;
+  location?: {
+    lat: number;
+    lng: number;
+    area: string;
+    landmark?: string;
+    district: string;
+    state: string;
+  };
 }
 
 interface VolunteerProfile {
@@ -74,6 +88,7 @@ interface VolunteerProfile {
   email: string;
   totalPoints?: number;
   earnedBadges?: { id: string; label: string; earnedAt: string }[];
+  skills?: string[];
 }
 
 const BADGE_CONFIG = [
@@ -134,7 +149,11 @@ export default function VolunteerDashboard() {
     if (!user?.uid) return;
     const unsubscribe = onSnapshot(doc(db, 'users', user.uid), (doc) => {
       if (doc.exists()) {
-        setCurrentUserProfile({ uid: doc.id, ...doc.data() } as VolunteerProfile);
+        const data = doc.data() as VolunteerProfile;
+        setCurrentUserProfile({ uid: doc.id, ...data });
+        if (data.skills) {
+          setSelectedSkills(data.skills);
+        }
       }
     });
     return () => unsubscribe();
@@ -155,6 +174,41 @@ export default function VolunteerDashboard() {
 
     return () => unsubscribe();
   }, []);
+
+  const handleUpdateSkills = async () => {
+    if (!user?.uid) return;
+    setIsSavingSkills(true);
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        skills: selectedSkills,
+        updatedAt: serverTimestamp()
+      });
+      toast.success("Profile updated successfully!");
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+      toast.error("Failed to update profile");
+    } finally {
+      setIsSavingSkills(false);
+    }
+  };
+
+  const handleAddCustomSkill = () => {
+    if (!customSkill.trim()) return;
+    if (selectedSkills.includes(customSkill.trim())) {
+      toast.error("Skill already added");
+      return;
+    }
+    setSelectedSkills([...selectedSkills, customSkill.trim()]);
+    setCustomSkill('');
+  };
+
+  const handleRemoveSkill = (skill: string) => {
+    setSelectedSkills(selectedSkills.filter(s => s !== skill));
+  };
+
+  const handleNavigate = (lat: number, lng: number) => {
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`, '_blank');
+  };
 
   const handleUpdateTaskStatus = async (taskId: string, newStatus: Task['status']) => {
     try {
@@ -192,12 +246,6 @@ export default function VolunteerDashboard() {
           console.error("Failed to award points:", error);
           toast.error("Failed to award points. Please try again later.");
         }
-      }
-      
-      if (newStatus === 'accepted') {
-        setActiveSection('accepted');
-      } else if (newStatus === 'in-progress') {
-        setActiveSection('progress');
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `tasks/${taskId}`);
@@ -341,11 +389,13 @@ export default function VolunteerDashboard() {
     { id: 'home', label: 'Overview', icon: LayoutDashboard },
     { id: 'find', label: 'Find Needs', icon: Search },
     { id: 'matched', label: 'Matched Tasks', icon: Zap },
+    { id: 'map', label: 'Map View', icon: MapPin },
     { id: 'accepted', label: 'Accepted Tasks', icon: BookmarkCheck },
     { id: 'progress', label: 'In Progress Tasks', icon: Clock },
     { id: 'contributions', label: 'Your Contributions', icon: Trophy },
     { id: 'leaderboard', label: 'Leaderboard', icon: Medal },
     { id: 'badges', label: 'My Badges', icon: Award },
+    { id: 'profile', label: 'My Profile', icon: User },
   ];
 
   return (
@@ -471,7 +521,7 @@ export default function VolunteerDashboard() {
                 </Card>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <Card className="bg-white/50 backdrop-blur hover:bg-white transition-colors cursor-pointer group text-left" onClick={() => setActiveSection('find')}>
                   <CardHeader>
                     <Search className="w-8 h-8 text-primary mb-2 group-hover:scale-110 transition-transform" />
@@ -486,6 +536,63 @@ export default function VolunteerDashboard() {
                     <CardDescription>Get tasks based on your skills</CardDescription>
                   </CardHeader>
                 </Card>
+                <Card className="bg-white/50 backdrop-blur hover:bg-white transition-colors cursor-pointer group text-left" onClick={() => setActiveSection('map')}>
+                  <CardHeader>
+                    <MapPin className="w-8 h-8 text-green-500 mb-2 group-hover:scale-110 transition-transform" />
+                    <CardTitle className="text-lg">Map View</CardTitle>
+                    <CardDescription>See nearby tasks on a map</CardDescription>
+                  </CardHeader>
+                </Card>
+              </div>
+            </motion.div>
+          )}
+
+          {activeSection === 'map' && (
+            <motion.div
+              key="map"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="h-[calc(100vh-250px)] min-h-[500px] flex flex-col"
+            >
+              <div className="mb-6 flex justify-between items-end">
+                <div>
+                  <h2 className="text-3xl font-bold text-slate-900 flex items-center gap-3">
+                    <MapPin className="w-8 h-8 text-primary" />
+                    Interactive Task Map
+                  </h2>
+                  <p className="text-slate-500">Find opportunities near you visually.</p>
+                </div>
+                <Button variant="outline" onClick={() => setActiveSection('find')}>
+                  Back to List
+                </Button>
+              </div>
+
+              <div className="flex-1 relative">
+                <MapComponent 
+                  markers={allTasks
+                    .filter(t => t.status === 'pending' && t.location)
+                    .map(t => ({
+                      id: t.id,
+                      position: [t.location!.lat, t.location!.lng],
+                      title: t.title,
+                      description: `${t.priority} Priority - ${t.urgency}`,
+                      onAcceptTask: (id) => handleUpdateTaskStatus(id, 'accepted'),
+                      onNavigate: (lat, lng) => handleNavigate(lat, lng)
+                    }))
+                  }
+                />
+                
+                <div className="absolute bottom-4 left-4 z-[1000] bg-white/90 backdrop-blur p-3 rounded-lg shadow-lg border border-slate-200 max-w-xs">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Map Legend</h4>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm text-slate-600">
+                      <div className="w-3 h-3 rounded-full bg-blue-500"></div>
+                      <span>Pending Tasks</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400">Click on a marker to see details and navigate.</p>
+                  </div>
+                </div>
               </div>
             </motion.div>
           )}
@@ -681,11 +788,14 @@ export default function VolunteerDashboard() {
                         {task.description}
                       </p>
                     </CardContent>
-                    <CardFooter className="pt-0">
+                    <CardFooter className="pt-0 flex flex-col gap-3">
                       <div className="flex items-center text-[10px] text-slate-400 gap-2">
                         <Calendar className="w-3 h-3" />
                         {task.createdAt?.toDate().toLocaleDateString()}
                       </div>
+                      <Button variant="outline" className="w-full" onClick={() => handleUpdateTaskStatus(task.id, 'accepted')}>
+                        Accept Task
+                      </Button>
                     </CardFooter>
                   </Card>
                 ))}
@@ -823,18 +933,32 @@ export default function VolunteerDashboard() {
                             {task.description}
                           </p>
                         </CardContent>
-                        <CardFooter>
+                        <CardFooter className="flex flex-col gap-2">
                           {task.status === 'accepted' && (
-                            <Button className="w-full" onClick={() => handleUpdateTaskStatus(task.id, 'in-progress')}>
-                              <Play className="w-4 h-4 mr-2" />
-                              Start Task
-                            </Button>
+                            <div className="w-full flex gap-2">
+                              <Button className="flex-1" onClick={() => handleUpdateTaskStatus(task.id, 'in-progress')}>
+                                <Play className="w-4 h-4 mr-2" />
+                                Start Task
+                              </Button>
+                              {task.location && (
+                                <Button variant="outline" onClick={() => handleNavigate(task.location!.lat, task.location!.lng)}>
+                                  <Navigation className="w-4 h-4" />
+                                </Button>
+                              )}
+                            </div>
                           )}
                           {task.status === 'in-progress' && (
-                            <Button className="w-full bg-green-600 hover:bg-green-700" onClick={() => handleUpdateTaskStatus(task.id, 'completed')}>
-                              <CheckCircle2 className="w-4 h-4 mr-2" />
-                              Complete Task
-                            </Button>
+                            <div className="w-full flex gap-2">
+                              <Button className="flex-1 bg-green-600 hover:bg-green-700" onClick={() => handleUpdateTaskStatus(task.id, 'completed')}>
+                                <CheckCircle2 className="w-4 h-4 mr-2" />
+                                Complete Task
+                              </Button>
+                              {task.location && (
+                                <Button variant="outline" onClick={() => handleNavigate(task.location!.lat, task.location!.lng)}>
+                                  <Navigation className="w-4 h-4" />
+                                </Button>
+                              )}
+                            </div>
                           )}
                           {task.status === 'completed' && (
                             <div className="w-full flex items-center justify-center gap-2 text-green-600 font-medium bg-green-50 py-2 rounded">
@@ -846,6 +970,116 @@ export default function VolunteerDashboard() {
                       </Card>
                     ))
                 )}
+              </div>
+            </motion.div>
+          )}
+          {activeSection === 'profile' && (
+            <motion.div
+              key="profile"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="max-w-3xl mx-auto"
+            >
+              <div className="mb-8">
+                <h2 className="text-3xl font-bold text-slate-900 flex items-center gap-3">
+                  <User className="w-8 h-8 text-primary" />
+                  Your Profile
+                </h2>
+                <p className="text-slate-500">Manage your skills and personal information.</p>
+              </div>
+
+              <div className="space-y-6">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Account Information</CardTitle>
+                    <CardDescription>Basic details about your volunteer account.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <Label className="text-xs text-slate-400 uppercase">Email Address</Label>
+                        <p className="font-medium">{user?.email}</p>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-slate-400 uppercase">Account Type</Label>
+                        <p className="font-medium">Volunteer</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Your Skills</CardTitle>
+                    <CardDescription>Update your skills to get better task recommendations.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    <div className="space-y-4">
+                      <Label>Select from common skills</Label>
+                      <div className="flex flex-wrap gap-2">
+                        {PREDEFINED_SKILLS.map((skill) => (
+                          <button
+                            key={skill.id}
+                            onClick={() => {
+                              if (selectedSkills.includes(skill.label)) {
+                                setSelectedSkills(selectedSkills.filter(s => s !== skill.label));
+                              } else {
+                                setSelectedSkills([...selectedSkills, skill.label]);
+                              }
+                            }}
+                            className={`flex items-center gap-2 px-4 py-2 rounded-full border transition-all ${
+                              selectedSkills.includes(skill.label)
+                                ? 'bg-primary border-primary text-primary-foreground shadow-md'
+                                : 'bg-white border-slate-200 text-slate-600 hover:border-primary/50'
+                            }`}
+                          >
+                            <skill.icon className="w-4 h-4" />
+                            {skill.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-4">
+                      <Label>Add custom skills</Label>
+                      <div className="flex gap-2">
+                        <Input 
+                          placeholder="e.g., Graphic Design, Translation..." 
+                          value={customSkill}
+                          onChange={(e) => setCustomSkill(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && handleAddCustomSkill()}
+                        />
+                        <Button onClick={handleAddCustomSkill} variant="secondary">
+                          <Plus className="w-4 h-4 mr-2" />
+                          Add
+                        </Button>
+                      </div>
+                      
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        {selectedSkills.filter(s => !PREDEFINED_SKILLS.some(ps => ps.label === s)).map((skill) => (
+                          <div key={skill} className="flex items-center gap-2 bg-slate-100 text-slate-700 px-3 py-1 rounded-full text-sm">
+                            {skill}
+                            <button onClick={() => handleRemoveSkill(skill)} className="hover:text-red-500">
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </CardContent>
+                  <CardFooter className="bg-slate-50/50 border-t p-6">
+                    <Button 
+                      className="w-full" 
+                      onClick={handleUpdateSkills}
+                      disabled={isSavingSkills}
+                    >
+                      {isSavingSkills ? "Saving Changes..." : "Save Profile Changes"}
+                    </Button>
+                  </CardFooter>
+                </Card>
               </div>
             </motion.div>
           )}
