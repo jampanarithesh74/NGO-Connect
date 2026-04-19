@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '@/src/lib/AuthContext';
 import { auth, db } from '@/src/lib/firebase';
 import { signOut } from 'firebase/auth';
@@ -8,6 +8,8 @@ import {
   orderBy, 
   onSnapshot, 
   doc, 
+  getDoc,
+  addDoc,
   updateDoc, 
   serverTimestamp,
   Timestamp,
@@ -15,6 +17,9 @@ import {
   limit
 } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '@/src/lib/firestoreUtils';
+import { GoogleGenAI, Type } from "@google/genai";
+
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 import { 
   LayoutDashboard, 
   Search, 
@@ -46,6 +51,12 @@ import {
   Navigation,
   Upload,
   Loader2,
+  Crown,
+  Target,
+  Shield,
+  MessageCircle,
+  Send,
+  Check,
   AlertCircle
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -64,25 +75,32 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI } from "@google/genai";
 import { awardPointsAndBadges } from '@/src/lib/gamification';
-
 import MapComponent from './MapComponent';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
-
-type Section = 'home' | 'find' | 'matched' | 'accepted' | 'progress' | 'contributions' | 'leaderboard' | 'badges' | 'map' | 'profile';
+type Section = 'home' | 'find' | 'matched' | 'accepted' | 'progress' | 'contributions' | 'leaderboard' | 'badges' | 'map' | 'profile' | 'squad';
 
 interface Task {
   id: string;
   reportId: string;
   ngoId: string;
+  ngoName?: string;
   volunteerId?: string;
   title: string;
   description: string;
   priority: 'High' | 'Medium' | 'Low';
   urgency: 'Immediate' | 'Soon' | 'Planned';
-  status: 'pending' | 'accepted' | 'in-progress' | 'pending_approval' | 'completed' | 'cancelled';
+  complexity: 'Simple' | 'Standard' | 'Complex';
+  beneficiaries: number;
+  status: 'pending' | 'accepted' | 'active' | 'pending_approval' | 'completed' | 'cancelled';
+  aiDetails: {
+    recommendedTeamSize: number;
+    minMembers: number;
+    checklist: string[];
+  };
+  currentRadius: number;
+  timerExpiresAt?: Timestamp;
+  squadId?: string;
   createdAt: Timestamp;
   proofImageUrl?: string;
   completionNotes?: string;
@@ -97,10 +115,30 @@ interface Task {
   };
 }
 
+interface Squad {
+  id: string;
+  taskId: string;
+  leadId: string;
+  leadName: string;
+  memberIds: string[];
+  status: 'recruiting' | 'executing' | 'completed';
+  maxMembers: number;
+  createdAt: Timestamp;
+}
+
+interface Message {
+  id: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  createdAt: Timestamp;
+}
+
 interface VolunteerProfile {
   uid: string;
   displayName?: string;
   email: string;
+  impactPoints?: number;
   totalPoints?: number;
   earnedBadges?: { id: string; label: string; earnedAt: string }[];
   skills?: string[];
@@ -124,7 +162,9 @@ const PREDEFINED_SKILLS = [
 export default function VolunteerDashboard() {
   const { user, userSkills } = useAuth();
   const [activeSection, setActiveSection] = useState<Section>('home');
-  const [allTasks, setAllTasks] = useState<Task[]>([]);
+  const [pendingTasksState, setPendingTasksState] = useState<Task[]>([]);
+  const [personalTasksState, setPersonalTasksState] = useState<Task[]>([]);
+  const [squadTasksState, setSquadTasksState] = useState<Task[]>([]);
   const [matchedTasks, setMatchedTasks] = useState<Task[]>([]);
   const [isMatching, setIsMatching] = useState(false);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
@@ -132,6 +172,32 @@ export default function VolunteerDashboard() {
   const [isSavingSkills, setIsSavingSkills] = useState(false);
   const [topVolunteers, setTopVolunteers] = useState<VolunteerProfile[]>([]);
   const [currentUserProfile, setCurrentUserProfile] = useState<VolunteerProfile | null>(null);
+  const [activeSquad, setActiveSquad] = useState<Squad | null>(null);
+  const [squadMessages, setSquadMessages] = useState<Message[]>([]);
+  const [squadMembers, setSquadMembers] = useState<VolunteerProfile[]>([]);
+  const [currentLocation, setCurrentLocation] = useState<{lat: number, lng: number} | null>(null);
+  const [incomingNotifications, setIncomingNotifications] = useState<any[]>([]);
+  const [activeNotification, setActiveNotification] = useState<any | null>(null);
+  const [isJoiningSquad, setIsJoiningSquad] = useState(false);
+  const [isTakingResponsibility, setIsTakingResponsibility] = useState(false);
+  const [isStartMissionDialogOpen, setIsStartMissionDialogOpen] = useState(false);
+  
+  // Solo Checklist State
+  const [isChecklistDialogOpen, setIsChecklistDialogOpen] = useState(false);
+  const [checklistTask, setChecklistTask] = useState<Task | null>(null);
+  const [confirmedItems, setConfirmedItems] = useState<string[]>([]);
+
+  const handleUpdateTaskStatus = async (taskId: string, newStatus: Task['status']) => {
+    try {
+      await updateDoc(doc(db, 'tasks', taskId), {
+        status: newStatus,
+        updatedAt: serverTimestamp()
+      });
+      toast.success(`Status updated to ${newStatus}`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `tasks/${taskId}`);
+    }
+  };
 
   // Photo Verification State
   const [isSubmitDialogOpen, setIsSubmitDialogOpen] = useState(false);
@@ -155,7 +221,10 @@ export default function VolunteerDashboard() {
       
       // Sort in memory to avoid composite index requirements during development
       const sorted = volunteers
-        .sort((a, b) => (b.totalPoints || 0) - (a.totalPoints || 0))
+        .sort((a, b) => 
+          Math.max(b.impactPoints || 0, b.totalPoints || 0) - 
+          Math.max(a.impactPoints || 0, a.totalPoints || 0)
+        )
         .slice(0, 10);
         
       setTopVolunteers(sorted);
@@ -181,21 +250,222 @@ export default function VolunteerDashboard() {
     return () => unsubscribe();
   }, [user?.uid]);
 
-  // Fetch tasks from tasks collection
+  // Fetch active squad if user is part of one
   useEffect(() => {
-    const q = query(collection(db, 'tasks'), orderBy('createdAt', 'desc'));
+    if (!user?.uid) return;
+    const q = query(
+      collection(db, 'squads'),
+      where('memberIds', 'array-contains', user.uid),
+      where('status', 'in', ['recruiting', 'executing']),
+      limit(1)
+    );
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const tasks = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Task[];
-      setAllTasks(tasks);
+      if (!snapshot.empty) {
+        const squadData = { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as Squad;
+        setActiveSquad(squadData);
+      } else {
+        setActiveSquad(null);
+      }
     }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'tasks');
+      handleFirestoreError(error, OperationType.LIST, 'squads');
+    });
+    return () => unsubscribe();
+  }, [user?.uid]);
+
+  // Fetch messages and members for active squad
+  useEffect(() => {
+    if (!activeSquad) {
+      setSquadMessages([]);
+      setSquadMembers([]);
+      return;
+    }
+
+    const messagesQuery = query(
+      collection(db, `squads/${activeSquad.id}/messages`),
+      orderBy('createdAt', 'asc')
+    );
+    const unsubscribeMessages = onSnapshot(messagesQuery, (snapshot) => {
+      const messages = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Message[];
+      setSquadMessages(messages);
     });
 
-    return () => unsubscribe();
-  }, []);
+    const membersQuery = query(
+      collection(db, 'users'),
+      where('uid', 'in', activeSquad.memberIds)
+    );
+    const unsubscribeMembers = onSnapshot(membersQuery, (snapshot) => {
+      const members = snapshot.docs.map(doc => ({ uid: doc.id, ...doc.data() })) as VolunteerProfile[];
+      setSquadMembers(members);
+    });
+
+    return () => {
+      unsubscribeMessages();
+      unsubscribeMembers();
+    };
+  }, [activeSquad?.id, activeSquad?.memberIds]);
+
+  // Combined tasks for UI filtering
+  const allTasks = useMemo(() => {
+    const taskMap = new Map<string, Task>();
+    pendingTasksState.forEach(t => taskMap.set(t.id, t));
+    personalTasksState.forEach(t => taskMap.set(t.id, t));
+    squadTasksState.forEach(t => taskMap.set(t.id, t));
+    return Array.from(taskMap.values()).sort((a, b) => 
+      (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0)
+    );
+  }, [pendingTasksState, personalTasksState, squadTasksState]);
+
+  // Fetch tasks and expansion logic
+  useEffect(() => {
+    if (!user?.uid) return;
+
+    // 1. Fetch pending tasks (available for everyone to see)
+    const qPending = query(
+      collection(db, 'tasks'), 
+      where('status', '==', 'pending'),
+      orderBy('createdAt', 'desc')
+    );
+
+    const unsubscribePending = onSnapshot(qPending, (snapshot) => {
+      const newTasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Task[];
+      setPendingTasksState(newTasks);
+
+      // Expansion Logic for pending tasks
+      const now = Date.now();
+      newTasks.forEach(async (task) => {
+        if (task.status === 'pending' && task.timerExpiresAt) {
+          const expiresAt = task.timerExpiresAt.toMillis();
+          if (now > expiresAt && task.currentRadius < 30) {
+            const nextRadius = (task.currentRadius || 10) + 10;
+            console.log(`Expanding radius for task ${task.id} to ${nextRadius}km`);
+            try {
+              await updateDoc(doc(db, 'tasks', task.id), {
+                currentRadius: nextRadius,
+                timerExpiresAt: Timestamp.fromMillis(now + 30 * 60 * 1000),
+                updatedAt: serverTimestamp()
+              });
+              toast.info(`Task radius expanded for nearby volunteers!`, {
+                description: task.title
+              });
+            } catch (e) {
+              console.error("Failed to expand radius:", e);
+            }
+          }
+        }
+      });
+    }, (error) => {
+      console.warn("Pending tasks fetch restricted:", error.message);
+    });
+
+    // 2. Fetch my personal tasks (assigned to me)
+    const qPersonal = query(
+      collection(db, 'tasks'),
+      where('volunteerId', '==', user.uid),
+      orderBy('createdAt', 'desc')
+    );
+
+    const unsubscribePersonal = onSnapshot(qPersonal, (snapshot) => {
+      const newTasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Task[];
+      setPersonalTasksState(newTasks);
+    }, (error) => {
+      console.warn("Personal tasks fetch restricted:", error.message);
+    });
+
+    return () => {
+      unsubscribePending();
+      unsubscribePersonal();
+    };
+  }, [user?.uid]);
+
+  // Separate effect for squad tasks as it depends on activeSquad state
+  useEffect(() => {
+    if (!user?.uid || !activeSquad?.id) {
+      setSquadTasksState([]);
+      return;
+    }
+
+    const qSquad = query(
+      collection(db, 'tasks'),
+      where('squadId', '==', activeSquad.id)
+    );
+
+    const unsubscribeSquad = onSnapshot(qSquad, (snapshot) => {
+      const newTasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Task[];
+      setSquadTasksState(newTasks);
+    }, (error) => {
+      console.warn("Squad tasks fetch restricted:", error.message);
+    });
+
+    return () => unsubscribeSquad();
+  }, [user?.uid, activeSquad?.id]);
+
+  // Location tracking and Notification Listener
+  useEffect(() => {
+    if (!user?.uid) return;
+
+    // 1. Get initial location
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setCurrentLocation({ 
+            lat: position.coords.latitude, 
+            lng: position.coords.longitude 
+          });
+        },
+        (error) => console.warn("Location access denied", error)
+      );
+    }
+
+    // 2. Listen for nearby recruitment notifications
+    const qNotifications = query(
+      collection(db, 'notifications'),
+      where('type', '==', 'squad_recruitment'),
+      orderBy('createdAt', 'desc'),
+      limit(10)
+    );
+
+    const unsubscribeNotifications = onSnapshot(qNotifications, (snapshot) => {
+      const allNotifs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setIncomingNotifications(allNotifs);
+    });
+
+    return () => unsubscribeNotifications();
+  }, [user?.uid]);
+
+  // Distance helper (Haversine)
+  const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371; // km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = 
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+      Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+  };
+
+  // Filter nearby notifications
+  useEffect(() => {
+    if (!currentLocation || incomingNotifications.length === 0 || activeSquad) return;
+
+    const nearby = incomingNotifications.find(notif => {
+      if (!notif.location?.lat || !notif.location?.lng) return false;
+      const distance = calculateDistance(
+        currentLocation.lat, 
+        currentLocation.lng, 
+        notif.location.lat, 
+        notif.location.lng
+      );
+      // Ensure user isn't already the lead/member (though rule handles this, UI should too)
+      const isAlreadyLead = notif.leadId === user?.uid;
+      return distance <= 10 && !isAlreadyLead;
+    });
+
+    if (nearby && (!activeNotification || activeNotification.id !== nearby.id)) {
+      setActiveNotification(nearby);
+    }
+  }, [currentLocation, incomingNotifications, activeSquad]);
 
   const handleUpdateSkills = async () => {
     if (!user?.uid) return;
@@ -232,21 +502,242 @@ export default function VolunteerDashboard() {
     window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`, '_blank');
   };
 
-  const handleUpdateTaskStatus = async (taskId: string, newStatus: Task['status']) => {
+  const handleJoinSquad = async (squadId: string) => {
+    if (activeSquad) {
+      toast.error("You are already part of a squad!");
+      return;
+    }
     try {
-      const updateData: any = {
-        status: newStatus,
-        updatedAt: serverTimestamp()
-      };
+      const squadRef = doc(db, 'squads', squadId);
+      const squadSnap = await getDoc(squadRef);
+      if (!squadSnap.exists()) return;
+      const squad = squadSnap.data() as Squad;
       
-      if (newStatus === 'accepted') {
-        updateData.volunteerId = user?.uid;
+      if (squad.memberIds.length >= squad.maxMembers) {
+        toast.error("Squad is full!");
+        return;
       }
 
-      await updateDoc(doc(db, 'tasks', taskId), updateData);
-      toast.success(`Task status updated!`);
+      await updateDoc(squadRef, {
+        memberIds: [...squad.memberIds, user!.uid],
+        updatedAt: serverTimestamp()
+      });
+
+      // Sync memberIds to task for better security rules performance
+      const taskRef = doc(db, 'tasks', squad.taskId);
+      const taskSnap = await getDoc(taskRef);
+      if (taskSnap.exists()) {
+        const currentTaskMembers = taskSnap.data()?.memberIds || [];
+        if (!currentTaskMembers.includes(user!.uid)) {
+          await updateDoc(taskRef, {
+            memberIds: [...currentTaskMembers, user!.uid]
+          });
+        }
+      }
+
+      toast.success("Joined the squad!");
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `tasks/${taskId}`);
+      handleFirestoreError(error, OperationType.UPDATE, `squads/${squadId}`);
+    }
+  };
+
+  const handleRequestTeam = async (task: Task) => {
+    if (activeSquad) {
+      toast.error("You are already in a squad. Finish or leave existing projects first.");
+      return;
+    }
+
+    try {
+      const squadRef = await addDoc(collection(db, 'squads'), {
+        taskId: task.id,
+        leadId: user!.uid,
+        leadName: user?.displayName || user?.email?.split('@')[0],
+        memberIds: [user!.uid],
+        status: 'recruiting',
+        maxMembers: (task.aiDetails?.recommendedTeamSize || 2) + 2, // Allow some buffer
+        createdAt: serverTimestamp()
+      });
+
+      await updateDoc(doc(db, 'tasks', task.id), {
+        squadId: squadRef.id,
+        status: 'accepted',
+        memberIds: [user!.uid], // Lead is the first member
+        updatedAt: serverTimestamp()
+      });
+
+      // Notify nearby volunteers (Simplified: create system notification)
+      await addDoc(collection(db, 'notifications'), {
+        type: 'squad_recruitment',
+        taskId: task.id,
+        squadId: squadRef.id,
+        title: "Squad Recruiting!",
+        message: `New squad forming for: ${task.title}. Join now!`,
+        location: task.location,
+        radius: 10,
+        createdAt: serverTimestamp()
+      });
+
+      toast.success("Squad created! You are the Team Lead.");
+      setActiveSection('squad');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'squads');
+    }
+  };
+
+  const [isGeneratingChecklist, setIsGeneratingChecklist] = useState(false);
+
+  const handleAcceptSolo = async (task: Task) => {
+    setChecklistTask(task);
+    setConfirmedItems([]);
+    
+    // If checklist is missing, generate it on the fly
+    if (!task.aiDetails?.checklist || task.aiDetails.checklist.length === 0) {
+      setIsGeneratingChecklist(true);
+      setIsChecklistDialogOpen(true); // Open early to show loading state
+      try {
+        const prompt = `
+          Analyze this volunteer task:
+          Title: ${task.title}
+          Description: ${task.description}
+          Complexity: ${task.complexity}
+          
+          Generate a realistic checklist of 5-7 items (tools, safety gear, or specific skills) 
+          a volunteer needs to CONFIRM they have or can do before starting this task SOLO.
+          
+          Return ONLY a JSON array of strings.
+        `;
+
+        const response = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING }
+            }
+          }
+        });
+
+        const checklist = JSON.parse(response.text || "[]");
+        
+        // Update task with generated checklist for future use
+        const updatedAiDetails = {
+          ...task.aiDetails,
+          checklist: checklist
+        };
+        
+        await updateDoc(doc(db, 'tasks', task.id), {
+          aiDetails: updatedAiDetails
+        });
+        
+        setChecklistTask({
+          ...task,
+          aiDetails: updatedAiDetails
+        });
+      } catch (err) {
+        console.error("AI Checklist generation error:", err);
+        toast.error("Failed to generate mission requirements. Using defaults.");
+        // Fallback checklist
+        const fallback = ["Basic First Aid Awareness", "Phone with battery", "Appropriate Footwear"];
+        setChecklistTask({
+          ...task,
+          aiDetails: { ...task.aiDetails, checklist: fallback }
+        });
+      } finally {
+        setIsGeneratingChecklist(false);
+      }
+    } else {
+      setIsChecklistDialogOpen(true);
+    }
+  };
+
+  const confirmSoloStart = async () => {
+    if (!checklistTask || !checklistTask.aiDetails) return;
+    if (confirmedItems.length < (checklistTask.aiDetails.checklist?.length || 0)) {
+      toast.error("Please confirm all checklist items first.");
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, 'tasks', checklistTask.id), {
+        status: 'accepted',
+        volunteerId: user!.uid,
+        memberIds: [user!.uid], // Solo volunteer is the only member
+        updatedAt: serverTimestamp()
+      });
+      toast.success("Task accepted! You can start it from your Accepted Tasks section.");
+      setIsChecklistDialogOpen(false);
+      setActiveSection('accepted');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `tasks/${checklistTask.id}`);
+    }
+  };
+
+  const handleStartTask = async () => {
+    if (!activeSquad || activeSquad.leadId !== user?.uid) return;
+    try {
+      await updateDoc(doc(db, 'squads', activeSquad.id), {
+        status: 'executing',
+        updatedAt: serverTimestamp()
+      });
+      await updateDoc(doc(db, 'tasks', activeSquad.taskId), {
+        status: 'active',
+        updatedAt: serverTimestamp()
+      });
+      toast.success("Task execution started!");
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `squads/${activeSquad.id}`);
+    }
+  };
+
+  const handleSendMessage = async (text: string) => {
+    if (!activeSquad || !text.trim()) return;
+
+    // Check if task is completed - if so, chat is read only
+    const taskData = allTasks.find(t => t.squadId === activeSquad.id);
+    if (taskData?.status === 'completed') {
+      toast.error("Mission complete. Coordination channel is now read-only.");
+      return;
+    }
+
+    try {
+      await addDoc(collection(db, `squads/${activeSquad.id}/messages`), {
+        senderId: user?.uid,
+        senderName: user?.displayName || user?.email?.split('@')[0],
+        text: text.trim(),
+        createdAt: serverTimestamp()
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `squads/${activeSquad.id}/messages`);
+    }
+  };
+
+  const handleStartMissionConfirm = async () => {
+    if (!activeSquad) return;
+    
+    setIsSavingSkills(true); // Using this as a general loading state for simplicity
+    try {
+      // Find the associated task
+      const task = allTasks.find(t => t.squadId === activeSquad.id);
+      if (!task) throw new Error("Task not found");
+
+      await updateDoc(doc(db, 'squads', activeSquad.id), {
+        status: 'executing',
+        updatedAt: serverTimestamp()
+      });
+
+      await updateDoc(doc(db, 'tasks', task.id), {
+        status: 'active',
+        updatedAt: serverTimestamp()
+      });
+
+      toast.success("Mission started! Coordinates unlocked for the squad.");
+      setIsStartMissionDialogOpen(false);
+    } catch (error) {
+       handleFirestoreError(error, OperationType.UPDATE, `squads/${activeSquad.id}`);
+    } finally {
+      setIsSavingSkills(false);
     }
   };
 
@@ -440,13 +931,24 @@ export default function VolunteerDashboard() {
                 />
               </div>
             </CardContent>
-            <CardFooter>
+            <CardFooter className="flex flex-col gap-3">
               <Button 
                 className="w-full py-6 text-lg" 
                 onClick={handleSaveSkills}
                 disabled={isSavingSkills}
               >
                 {isSavingSkills ? "Saving..." : "Start Volunteering"}
+              </Button>
+              <Button 
+                variant="ghost" 
+                className="w-full text-slate-500"
+                onClick={() => {
+                  localStorage.removeItem('onboarding_role');
+                  signOut(auth);
+                }}
+              >
+                <LogOut className="w-4 h-4 mr-2" />
+                Back to Login
               </Button>
             </CardFooter>
           </Card>
@@ -462,6 +964,7 @@ export default function VolunteerDashboard() {
     { id: 'map', label: 'Map View', icon: MapPin },
     { id: 'accepted', label: 'Accepted Tasks', icon: BookmarkCheck },
     { id: 'progress', label: 'In Progress Tasks', icon: Clock },
+    { id: 'squad', label: 'Squad Room', icon: MessageCircle, hidden: !activeSquad },
     { id: 'contributions', label: 'Your Contributions', icon: Trophy },
     { id: 'leaderboard', label: 'Leaderboard', icon: Medal },
     { id: 'badges', label: 'My Badges', icon: Award },
@@ -479,7 +982,7 @@ export default function VolunteerDashboard() {
           </div>
           
           <nav className="space-y-1">
-            {sidebarItems.map((item) => (
+            {sidebarItems.filter(i => !i.hidden).map((item) => (
               <button
                 key={item.id}
                 onClick={() => setActiveSection(item.id as Section)}
@@ -526,9 +1029,56 @@ export default function VolunteerDashboard() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="max-w-5xl mx-auto"
+              className="max-w-5xl mx-auto space-y-8"
             >
-              <div className="mb-8 text-left">
+              {activeSquad && (
+                <Card className="bg-gradient-to-br from-indigo-600 to-blue-700 border-none shadow-xl text-white overflow-hidden relative">
+                  <div className="absolute top-0 right-0 p-8 opacity-10">
+                    <Users className="w-32 h-32" />
+                  </div>
+                  <CardHeader>
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <CardTitle className="text-2xl font-bold">Active Squad Mission</CardTitle>
+                        <CardDescription className="text-indigo-100 italic">"Coming together is a beginning; keeping together is progress; working together is success."</CardDescription>
+                      </div>
+                      <Button 
+                        variant="secondary" 
+                        size="sm" 
+                        className="bg-white/20 hover:bg-white/30 border-none text-white font-bold"
+                        onClick={() => setActiveSection('squad')}
+                      >
+                        Enter Squad Room
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex items-center gap-4">
+                      <div className="p-3 bg-white/10 rounded-xl backdrop-blur-sm">
+                        <Users className="w-6 h-6 outline-none" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-medium opacity-80 uppercase tracking-wider">Squad Strength</div>
+                        <div className="text-xl font-bold">{activeSquad.memberIds.length} Members Joined</div>
+                      </div>
+                      <div className="ml-auto flex -space-x-4">
+                        {squadMembers.slice(0, 5).map(m => (
+                          <div key={m.uid} className="w-10 h-10 rounded-full border-4 border-indigo-600 bg-indigo-400 flex items-center justify-center font-bold text-xs shadow-md transition-transform hover:scale-110 hover:z-10" title={m.displayName || m.email}>
+                            {m.email?.[0].toUpperCase()}
+                          </div>
+                        ))}
+                        {activeSquad.memberIds.length > 5 && (
+                          <div className="w-10 h-10 rounded-full border-4 border-indigo-600 bg-white/20 backdrop-blur flex items-center justify-center font-bold text-xs shadow-md">
+                            +{activeSquad.memberIds.length - 5}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              <div className="text-left">
                 <h2 className="text-4xl font-bold text-slate-900 mb-2">Welcome back!</h2>
                 <p className="text-slate-500 text-lg">You're making a real difference in the community.</p>
               </div>
@@ -540,7 +1090,9 @@ export default function VolunteerDashboard() {
                   </div>
                   <CardHeader>
                     <CardTitle className="text-sm font-medium opacity-80 uppercase tracking-wider">Total Impact Points</CardTitle>
-                    <div className="text-5xl font-bold mt-2">{currentUserProfile?.totalPoints || 0}</div>
+                    <div className="text-5xl font-bold mt-2">
+                      {Math.max(currentUserProfile?.impactPoints || 0, currentUserProfile?.totalPoints || 0)}
+                    </div>
                   </CardHeader>
                   <CardContent>
                     <p className="text-xs opacity-70">Keep completing tasks to climb the leaderboard!</p>
@@ -647,7 +1199,10 @@ export default function VolunteerDashboard() {
                       position: [t.location!.lat, t.location!.lng],
                       title: t.title,
                       description: `${t.priority} Priority - ${t.urgency}`,
-                      onAcceptTask: (id) => handleUpdateTaskStatus(id, 'accepted'),
+                      onAcceptTask: (id) => {
+                        const task = allTasks.find(t => t.id === id);
+                        if (task) handleAcceptSolo(task);
+                      },
                       onNavigate: (lat, lng) => handleNavigate(lat, lng)
                     }))
                   }
@@ -696,7 +1251,7 @@ export default function VolunteerDashboard() {
                   <CardHeader className="pb-2">
                     <CardTitle className="text-xs font-bold text-slate-400 uppercase tracking-wider">Your Points</CardTitle>
                     <div className="text-2xl font-bold text-slate-900">
-                      {currentUserProfile?.totalPoints || 0}
+                      {Math.max(currentUserProfile?.impactPoints || 0, currentUserProfile?.totalPoints || 0)}
                     </div>
                   </CardHeader>
                 </Card>
@@ -756,7 +1311,7 @@ export default function VolunteerDashboard() {
                           })}
                         </div>
                         <div className="col-span-2 text-right font-mono font-bold text-primary text-xl">
-                          {v.totalPoints || 0}
+                          {Math.max(v.impactPoints || 0, v.totalPoints || 0)}
                         </div>
                       </div>
                     ))
@@ -847,25 +1402,52 @@ export default function VolunteerDashboard() {
                         }`}>
                           {task.priority} Priority
                         </span>
-                        <span className="text-[10px] font-medium text-slate-400 uppercase">
-                          {task.urgency}
-                        </span>
+                        <div className="flex flex-col items-end gap-1">
+                          <span className="text-[10px] font-medium text-slate-400 uppercase">
+                            {task.urgency}
+                          </span>
+                          <span className="text-[10px] font-bold text-primary uppercase bg-primary/5 px-2 py-0.5 rounded">
+                            {10 + (task.priority === 'High' ? 40 : task.priority === 'Medium' ? 20 : 0) + Math.min(60, (task.beneficiaries || 0) * 2) + (task.complexity === 'Complex' ? 50 : task.complexity === 'Standard' ? 20 : 0)} Points
+                          </span>
+                        </div>
                       </div>
                       <CardTitle className="text-lg">{task.title}</CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <p className="text-sm text-slate-600 line-clamp-3">
+                      <p className="text-sm text-slate-600 line-clamp-3 mb-4">
                         {task.description}
                       </p>
+                      <div className="flex gap-2">
+                        <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-blue-50 text-blue-700 text-[10px] font-bold uppercase transition-colors">
+                          <Users className="w-3 h-3" />
+                          Reach: {task.beneficiaries || 0}
+                        </div>
+                        <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-amber-50 text-amber-700 text-[10px] font-bold uppercase transition-colors">
+                          <Sparkles className="w-3 h-3" />
+                          Effort: {task.complexity || 'Standard'}
+                        </div>
+                      </div>
                     </CardContent>
                     <CardFooter className="pt-0 flex flex-col gap-3">
                       <div className="flex items-center text-[10px] text-slate-400 gap-2">
                         <Calendar className="w-3 h-3" />
                         {task.createdAt?.toDate().toLocaleDateString()}
                       </div>
-                      <Button variant="outline" className="w-full" onClick={() => handleUpdateTaskStatus(task.id, 'accepted')}>
-                        Accept Task
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button 
+                          variant="outline" 
+                          className="flex-1 text-xs" 
+                          onClick={() => handleAcceptSolo(task)}
+                        >
+                          Accept Solo
+                        </Button>
+                        <Button 
+                          className="flex-1 text-xs" 
+                          onClick={() => handleRequestTeam(task)}
+                        >
+                          Request Team
+                        </Button>
+                      </div>
                     </CardFooter>
                   </Card>
                 ))}
@@ -919,27 +1501,222 @@ export default function VolunteerDashboard() {
                             <span className="px-2 py-1 rounded bg-amber-100 text-amber-700 text-[10px] font-bold uppercase tracking-wider">
                               Best Match
                             </span>
-                            <span className="text-[10px] font-medium text-slate-400 uppercase">
-                              {task.urgency}
-                            </span>
+                            <div className="flex flex-col items-end gap-1">
+                              <span className="text-[10px] font-medium text-slate-400 uppercase">
+                                {task.urgency}
+                              </span>
+                              <span className="text-[10px] font-bold text-amber-600 uppercase bg-amber-100/50 px-2 py-0.5 rounded">
+                                Impact: {10 + (task.priority === 'High' ? 40 : task.priority === 'Medium' ? 20 : 0) + Math.min(60, (task.beneficiaries || 0) * 2) + (task.complexity === 'Complex' ? 50 : task.complexity === 'Standard' ? 20 : 0)} Pts
+                              </span>
+                            </div>
                           </div>
                           <CardTitle className="text-lg">{task.title}</CardTitle>
                         </CardHeader>
                         <CardContent>
-                          <p className="text-sm text-slate-600">
+                          <p className="text-sm text-slate-600 mb-4">
                             {task.description}
                           </p>
+                          <div className="flex gap-2">
+                            <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-blue-50 text-blue-700 text-[10px] font-bold uppercase transition-colors">
+                              <Users className="w-3 h-3" />
+                              Reach: {task.beneficiaries || 0}
+                            </div>
+                            <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-amber-100 text-amber-800 text-[10px] font-bold uppercase transition-colors">
+                              <Sparkles className="w-3 h-3" />
+                              Effort: {task.complexity || 'Standard'}
+                            </div>
+                          </div>
                         </CardContent>
                         <CardFooter>
-                          <Button variant="outline" className="w-full" onClick={() => handleUpdateTaskStatus(task.id, 'accepted')}>
-                            Accept Task
-                          </Button>
+                          <div className="flex gap-2">
+                            <Button 
+                              variant="outline" 
+                              className="flex-1 text-xs border-amber-300 hover:bg-amber-100" 
+                              onClick={() => handleAcceptSolo(task)}
+                            >
+                              Accept Solo
+                            </Button>
+                            <Button 
+                              className="flex-1 text-xs bg-amber-600 hover:bg-amber-700" 
+                              onClick={() => handleRequestTeam(task)}
+                            >
+                              Request Team
+                            </Button>
+                          </div>
                         </CardFooter>
                       </Card>
                     ))
                   )}
                 </div>
               )}
+            </motion.div>
+          )}
+
+          {activeSection === 'squad' && activeSquad && (
+            <motion.div
+              key="squad"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="max-w-6xl mx-auto h-[calc(100vh-200px)] flex flex-col"
+            >
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 overflow-hidden">
+                {/* Chat Panel */}
+                <Card className="lg:col-span-2 flex flex-col overflow-hidden border-none shadow-2xl bg-white h-full">
+                  <CardHeader className="bg-slate-900 text-white p-6 shadow-md z-10">
+                    <div className="flex justify-between items-center">
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 rounded-2xl bg-primary/20 flex items-center justify-center rotate-3 group-hover:rotate-0 transition-transform">
+                          <MessageCircle className="w-6 h-6 text-primary" />
+                        </div>
+                        <div>
+                          <CardTitle className="text-xl">Squad Communication</CardTitle>
+                          <CardDescription className="text-slate-400 text-xs mt-1">Real-time mission coordination for your team</CardDescription>
+                        </div>
+                      </div>
+                      {activeSquad.leadId === user?.uid && activeSquad.status === 'recruiting' && (
+                        <Button 
+                          size="default" 
+                          className="bg-emerald-600 hover:bg-emerald-700 shadow-lg shadow-emerald-200"
+                          onClick={() => setIsStartMissionDialogOpen(true)}
+                        >
+                          <Play className="w-4 h-4 mr-2" />
+                          Start Mission
+                        </Button>
+                      )}
+                    </div>
+                  </CardHeader>
+                  
+                  <CardContent className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50/50">
+                    {squadMessages.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-4">
+                        <Shield className="w-16 h-16 opacity-10 animate-pulse" />
+                        <div className="text-center">
+                          <p className="font-bold text-slate-300 uppercase tracking-widest text-xs mb-1">Silence is Golden</p>
+                          <p className="text-sm">Start coordinating with your squad members.</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {squadMessages.map((msg, i) => (
+                          <div key={msg.id} className={`flex flex-col ${msg.senderId === user?.uid ? 'items-end' : 'items-start'}`}>
+                            <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm shadow-sm transition-all hover:shadow-md ${
+                              msg.senderId === user?.uid 
+                                ? 'bg-primary text-primary-foreground rounded-tr-none' 
+                                : 'bg-white text-slate-800 rounded-tl-none border border-slate-100'
+                            }`}>
+                              <p className={`font-black text-[10px] mb-1.5 uppercase tracking-wider ${msg.senderId === user?.uid ? 'text-blue-100' : 'text-primary'}`}>
+                                {msg.senderId === user?.uid ? 'Tactical Lead (You)' : msg.senderName}
+                              </p>
+                              <p className="leading-relaxed">{msg.text}</p>
+                            </div>
+                            <span className="text-[9px] font-bold text-slate-300 mt-1.5 uppercase tracking-tighter">
+                              {msg.createdAt?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+
+                  <CardFooter className="p-6 bg-white border-t border-slate-100">
+                    {activeSquad.status === 'completed' ? (
+                      <div className="w-full text-center py-3 bg-slate-100 text-slate-500 rounded-lg font-bold text-xs flex items-center justify-center gap-2">
+                        <Shield className="w-4 h-4" />
+                        MISSION COMPLETED - CHAT READ-ONLY
+                      </div>
+                    ) : (
+                      <div className="w-full flex gap-3">
+                        <Input 
+                          placeholder="Type tactical message..." 
+                          className="flex-1 h-12 bg-slate-50 border-none shadow-inner focus-visible:ring-primary"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              handleSendMessage(e.currentTarget.value);
+                              e.currentTarget.value = '';
+                            }
+                          }}
+                        />
+                        <Button size="icon" className="h-12 w-12 shrink-0 rounded-xl shadow-lg active:scale-95" onClick={(e) => {
+                          const target = e.currentTarget.parentElement?.firstChild as HTMLInputElement;
+                          handleSendMessage(target.value);
+                          target.value = '';
+                        }}>
+                          <Send className="w-5 h-5" />
+                        </Button>
+                      </div>
+                    )}
+                  </CardFooter>
+                </Card>
+
+                {/* Squad Members Panel */}
+                <div className="space-y-6 h-full flex flex-col overflow-hidden">
+                  <Card className="shadow-xl border-none flex-1 overflow-hidden flex flex-col">
+                    <CardHeader className="pb-4 bg-slate-50 border-b border-slate-100">
+                      <CardTitle className="text-base flex items-center gap-2 font-bold text-slate-800">
+                        <Users className="w-4 h-4 text-primary" />
+                        Tactical Unit
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3 p-4 overflow-y-auto flex-1">
+                      {squadMembers.map(member => (
+                        <div key={member.uid} className="flex items-center gap-4 p-3 rounded-xl hover:bg-slate-50 transition-all border border-transparent hover:border-slate-100 group">
+                          <div className={`w-12 h-12 rounded-xl flex items-center justify-center font-bold text-white border-2 border-white shadow-md transition-transform group-hover:scale-110 ${
+                            member.uid === activeSquad.leadId ? 'bg-amber-500' : 'bg-slate-400'
+                          }`}>
+                            {member.email?.[0].toUpperCase()}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-bold text-slate-900 truncate flex items-center gap-1.5">
+                              {member.displayName || member.email?.split('@')[0]}
+                              {member.uid === activeSquad.leadId && <Crown className="w-3.5 h-3.5 text-amber-500 fill-amber-500" />}
+                              {member.uid === user?.uid && <span className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full font-bold">YOU</span>}
+                            </p>
+                            <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest mt-0.5">
+                              {member.uid === activeSquad.leadId ? 'Squad Commander' : 'Field Operative'}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+
+                  <Card className="shadow-xl border-none bg-primary text-white overflow-hidden shrink-0">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-base flex items-center gap-2 font-bold">
+                        <Target className="w-4 h-4 text-primary-foreground" />
+                        Mission Progress
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4 pb-6">
+                      <div className="space-y-2">
+                        <div className="flex justify-between text-[10px] font-black uppercase tracking-widest opacity-80">
+                          <span>Execution Status</span>
+                          <span>{activeSquad.status === 'recruiting' ? '25%' : activeSquad.status === 'executing' ? '75%' : '100%'}</span>
+                        </div>
+                        <div className="w-full h-2.5 bg-white/20 rounded-full overflow-hidden shadow-inner">
+                          <div 
+                            className={`h-full transition-all duration-1000 bg-white shadow-[0_0_15px_rgba(255,255,255,0.5)] ${
+                              activeSquad.status === 'recruiting' ? 'w-1/4' : 
+                              activeSquad.status === 'executing' ? 'w-3/4' : 'w-full'
+                            }`}
+                          ></div>
+                        </div>
+                      </div>
+                      <div className="pt-4 border-t border-white/10">
+                        <Button 
+                          variant="secondary" 
+                          size="sm" 
+                          className="w-full bg-white text-primary hover:bg-blue-50 font-black uppercase tracking-widest text-[10px] shadow-lg"
+                          onClick={() => setActiveSection('progress')}
+                        >
+                          View Mission Briefing
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </div>
             </motion.div>
           )}
 
@@ -964,9 +1741,9 @@ export default function VolunteerDashboard() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {allTasks.filter(t => t.volunteerId === user?.uid && (
+                {allTasks.filter(t => (t.volunteerId === user?.uid || (activeSquad && t.squadId === activeSquad.id)) && (
                   activeSection === 'accepted' ? t.status === 'accepted' : 
-                  activeSection === 'progress' ? t.status === 'in-progress' : 
+                  activeSection === 'progress' ? t.status === 'active' : 
                   (t.status === 'completed' || t.status === 'pending_approval')
                 )).length === 0 ? (
                   <div className="col-span-full py-20 text-center text-slate-400">
@@ -974,9 +1751,9 @@ export default function VolunteerDashboard() {
                   </div>
                 ) : (
                   allTasks
-                    .filter(t => t.volunteerId === user?.uid && (
+                    .filter(t => (t.volunteerId === user?.uid || (activeSquad && t.squadId === activeSquad.id)) && (
                       activeSection === 'accepted' ? t.status === 'accepted' : 
-                      activeSection === 'progress' ? t.status === 'in-progress' : 
+                      activeSection === 'progress' ? t.status === 'active' : 
                       (t.status === 'completed' || t.status === 'pending_approval')
                     ))
                     .map((task) => (
@@ -994,17 +1771,32 @@ export default function VolunteerDashboard() {
                             }`}>
                               {task.priority} Priority
                             </span>
+                          <div className="flex flex-col items-end gap-1">
                             <span className="text-[10px] font-medium text-slate-400 uppercase">
                               {task.urgency}
                             </span>
+                            <span className="text-[10px] font-bold text-primary uppercase bg-primary/5 px-2 py-0.5 rounded">
+                              {10 + (task.priority === 'High' ? 40 : task.priority === 'Medium' ? 20 : 0) + Math.min(60, (task.beneficiaries || 0) * 2) + (task.complexity === 'Complex' ? 50 : task.complexity === 'Standard' ? 20 : 0)} Pts
+                            </span>
                           </div>
-                          <CardTitle className="text-lg">{task.title}</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <p className="text-sm text-slate-600">
-                            {task.description}
-                          </p>
-                          {task.rejectionReason && task.status === 'in-progress' && (
+                        </div>
+                        <CardTitle className="text-lg">{task.title}</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <p className="text-sm text-slate-600 mb-4">
+                          {task.description}
+                        </p>
+                        <div className="flex gap-2">
+                          <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-blue-50 text-blue-700 text-[10px] font-bold uppercase">
+                            <Users className="w-3 h-3" />
+                            Reach: {task.beneficiaries || 0}
+                          </div>
+                          <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-amber-50 text-amber-700 text-[10px] font-bold uppercase">
+                            <Sparkles className="w-3 h-3" />
+                            Effort: {task.complexity || 'Standard'}
+                          </div>
+                        </div>
+                        {task.rejectionReason && task.status === 'active' && (
                             <div className="mt-3 p-3 bg-red-50 border border-red-100 rounded-lg flex gap-2 items-start shrink-0">
                               <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
                               <div className="space-y-1">
@@ -1017,10 +1809,16 @@ export default function VolunteerDashboard() {
                         <CardFooter className="flex flex-col gap-2">
                           {task.status === 'accepted' && (
                             <div className="w-full flex gap-2">
-                              <Button className="flex-1" onClick={() => handleUpdateTaskStatus(task.id, 'in-progress')}>
-                                <Play className="w-4 h-4 mr-2" />
-                                Start Task
-                              </Button>
+                              {task.squadId ? (
+                                <div className="flex-1 text-center py-2 bg-amber-50 text-amber-700 font-bold rounded text-xs">
+                                  Recruiting Squad...
+                                </div>
+                              ) : (
+                                <Button className="flex-1" onClick={() => handleUpdateTaskStatus(task.id, 'active')}>
+                                  <Play className="w-4 h-4 mr-2" />
+                                  Start Solo Task
+                                </Button>
+                              )}
                               {task.location && (
                                 <Button variant="outline" onClick={() => handleNavigate(task.location!.lat, task.location!.lng)}>
                                   <Navigation className="w-4 h-4" />
@@ -1028,7 +1826,7 @@ export default function VolunteerDashboard() {
                               )}
                             </div>
                           )}
-                          {task.status === 'in-progress' && (
+                          {task.status === 'active' && (
                             <div className="w-full flex gap-2">
                               <Button className="flex-1 bg-green-600 hover:bg-green-700" onClick={() => {
                                 setSubmittingTask(task);
@@ -1181,6 +1979,56 @@ export default function VolunteerDashboard() {
         </AnimatePresence>
       </main>
 
+      {/* Solo Checklist Dialog */}
+      <Dialog open={isChecklistDialogOpen} onOpenChange={setIsChecklistDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-blue-600" />
+              Solo Ready Checklist
+            </DialogTitle>
+            <DialogDescription>
+              Confirm you can handle these requirements before starting solo.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-4">
+            {isGeneratingChecklist ? (
+              <div className="space-y-4 py-8 flex flex-col items-center justify-center text-slate-400">
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                <p className="text-sm animate-pulse">AI analyzing task requirements...</p>
+              </div>
+            ) : (
+              checklistTask?.aiDetails?.checklist?.map((item, idx) => (
+                <div key={idx} className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-100 rounded-lg cursor-pointer hover:bg-white hover:border-primary transition-all group"
+                     onClick={() => {
+                       if (confirmedItems.includes(item)) {
+                         setConfirmedItems(confirmedItems.filter(i => i !== item));
+                       } else {
+                         setConfirmedItems([...confirmedItems, item]);
+                       }
+                     }}>
+                  <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${confirmedItems.includes(item) ? 'bg-blue-600 border-blue-600' : 'border-slate-300 group-hover:border-primary'}`}>
+                    {confirmedItems.includes(item) && <Check className="w-3 h-3 text-white" />}
+                  </div>
+                  <span className="text-sm text-slate-700">{item}</span>
+                </div>
+              ))
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button 
+              className="w-full h-12 text-base font-bold" 
+              onClick={confirmSoloStart}
+              disabled={isGeneratingChecklist || confirmedItems.length < (checklistTask?.aiDetails?.checklist?.length || 0)}
+            >
+              {isGeneratingChecklist ? "Preparing Mission..." : "Confirm & Commit"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={isSubmitDialogOpen} onOpenChange={setIsSubmitDialogOpen}>
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
@@ -1240,6 +2088,127 @@ export default function VolunteerDashboard() {
                   Submitting...
                 </>
               ) : "Submit for Verification"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* Squad Recruitment Notification Popup */}
+      <Dialog open={!!activeNotification} onOpenChange={(open) => !open && setActiveNotification(null)}>
+        <DialogContent className="sm:max-w-md bg-slate-900 text-white border-blue-500/50 shadow-[0_0_50px_rgba(59,130,246,0.3)]">
+          <DialogHeader>
+            <div className="mx-auto w-16 h-16 bg-blue-500/10 rounded-full flex items-center justify-center mb-4 border border-blue-500/20">
+              <Users className="w-8 h-8 text-blue-400 animate-pulse" />
+            </div>
+            <DialogTitle className="text-2xl text-center font-black uppercase tracking-tighter italic">
+              New Squad Forming!
+            </DialogTitle>
+            <DialogDescription className="text-slate-400 text-center">
+              A mission requires reinforcements within 10km of your position.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-6 space-y-4">
+            <div className="p-4 bg-white/5 rounded-xl border border-white/10">
+              <p className="text-xs font-bold text-blue-400 uppercase tracking-widest mb-1">{activeNotification?.title}</p>
+              <p className="text-sm leading-relaxed">{activeNotification?.message}</p>
+            </div>
+            
+            <div className="flex items-center justify-center gap-4 text-[10px] font-black uppercase tracking-widest opacity-60">
+              <div className="flex items-center gap-1">
+                <MapPin className="w-3 h-3" />
+                Distance: ~{currentLocation && activeNotification?.location ? 
+                  Math.round(calculateDistance(currentLocation.lat, currentLocation.lng, activeNotification.location.lat, activeNotification.location.lng)) : '?'} km
+              </div>
+              <div className="flex items-center gap-1">
+                <Target className="w-3 h-3" />
+                Radius: {activeNotification?.radius} km
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter className="grid grid-cols-2 gap-4 sm:space-x-0">
+            <Button 
+              variant="outline" 
+              className="border-white/10 hover:bg-white/5 text-white"
+              onClick={() => setActiveNotification(null)}
+            >
+              Reject Mission
+            </Button>
+            <Button 
+              className="bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-900"
+              onClick={() => {
+                handleJoinSquad(activeNotification.squadId);
+                setActiveNotification(null);
+              }}
+              disabled={isJoiningSquad}
+            >
+              {isJoiningSquad ? "Joining..." : "Accept & Sync"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Start Mission Confirmation Dialog */}
+      <Dialog open={isStartMissionDialogOpen} onOpenChange={setIsStartMissionDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-xl font-black italic uppercase italic tracking-tighter">
+              <Play className="w-6 h-6 text-emerald-600" />
+              Initialize Operation
+            </DialogTitle>
+            <DialogDescription>
+              Final deployment check. Once started, the mission becomes active for all members.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-6 space-y-6">
+            {/* Squad Size Check */}
+            {activeSquad && (
+              <div className="p-4 rounded-xl border bg-slate-50 space-y-3">
+                <div className="flex justify-between items-center text-xs font-bold uppercase tracking-widest">
+                  <span>Current Strength</span>
+                  <span className={squadMembers.length < (activeSquad.maxMembers / 2) ? 'text-amber-600' : 'text-emerald-600'}>
+                    {squadMembers.length} / {Math.round(activeSquad.maxMembers / 2)}+ volunteers
+                  </span>
+                </div>
+                <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-emerald-500 transition-all duration-500" 
+                    style={{ width: `${Math.min(100, (squadMembers.length / (activeSquad.maxMembers / 2)) * 100)}%` }}
+                  ></div>
+                </div>
+                <p className="text-[10px] text-slate-500">
+                  {squadMembers.length < (activeSquad.maxMembers / 2) 
+                    ? "Recommended: Wait for more members to ensure mission success." 
+                    : "Squad state is optimal for deployment."}
+                </p>
+              </div>
+            )}
+
+            {/* Responsibility Checkbox */}
+            <div 
+              className="flex items-start gap-4 p-4 rounded-xl border-2 border-primary/20 bg-primary/5 cursor-pointer hover:bg-primary/10 transition-colors"
+              onClick={() => setIsTakingResponsibility(!isTakingResponsibility)}
+            >
+              <div className={`mt-0.5 w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${isTakingResponsibility ? 'bg-primary border-primary' : 'bg-white border-slate-300'}`}>
+                {isTakingResponsibility && <Check className="w-3.5 h-3.5 text-white" />}
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm font-bold text-slate-900 leading-none">Commander's Responsibility</p>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  I confirm that our current squad has the necessary resources and skills to complete this mission, and I take responsibility for the team's safety.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button 
+              className="w-full h-14 text-lg font-black italic uppercase tracking-widest shadow-xl" 
+              disabled={!isTakingResponsibility}
+              onClick={handleStartMissionConfirm}
+            >
+              Commence Mission
             </Button>
           </DialogFooter>
         </DialogContent>

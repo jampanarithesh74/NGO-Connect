@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, serverTimestamp, onSnapshot } from 'firebase/firestore';
 import { auth, db } from './firebase';
 
 interface AuthContextType {
@@ -29,32 +29,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isAuthReady, setIsAuthReady] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
       setUser(firebaseUser);
       
       if (firebaseUser) {
-        try {
-          const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-          if (userDoc.exists()) {
-            const data = userDoc.data();
+        // Use onSnapshot to reactively get the user profile
+        const userDocRef = doc(db, 'users', firebaseUser.uid);
+        const unsubscribeProfile = onSnapshot(userDocRef, (snapshot) => {
+          if (snapshot.exists()) {
+            const data = snapshot.data();
             setUserRole(data.role);
             setUserSkills(data.skills || []);
           } else {
             setUserRole(null);
             setUserSkills(null);
           }
-        } catch (error) {
-          console.error("Error fetching user role:", error);
+          setLoading(false);
+          setIsAuthReady(true);
+        }, (error) => {
+          console.error("Error fetching user profile:", error);
           setUserRole(null);
           setUserSkills(null);
-        }
+          setLoading(false);
+          setIsAuthReady(true);
+        });
+
+        return () => unsubscribeProfile();
       } else {
         setUserRole(null);
         setUserSkills(null);
+        setLoading(false);
+        setIsAuthReady(true);
       }
-      
-      setLoading(false);
-      setIsAuthReady(true);
     });
 
     return () => unsubscribe();

@@ -2,77 +2,146 @@
   "entities": {
     "User": {
       "title": "User",
-      "description": "A user of the platform (NGO or Volunteer)",
+      "description": "User profile for NGOs and Volunteers",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "description": "Firebase Auth UID" },
-        "email": { "type": "string", "format": "email" },
+        "uid": { "type": "string" },
         "displayName": { "type": "string" },
-        "photoURL": { "type": "string" },
+        "email": { "type": "string" },
         "role": { "type": "string", "enum": ["ngo", "volunteer"] },
-        "skills": { "type": "array", "items": { "type": "string" }, "description": "Volunteer skills" },
-        "totalPoints": { "type": "integer", "description": "Total impact points earned" },
-        "earnedBadges": { 
-          "type": "array", 
-          "items": { 
-            "type": "object",
-            "properties": {
-              "id": { "type": "string" },
-              "label": { "type": "string" },
-              "earnedAt": { "type": "string", "format": "date-time" }
-            }
+        "location": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
           }
         },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["uid", "email", "role"]
-    },
-    "Report": {
-      "title": "Report",
-      "description": "NGO report data and AI analysis",
-      "type": "object",
-      "properties": {
-        "id": { "type": "string" },
-        "ngoId": { "type": "string" },
-        "content": { "type": "string" },
-        "analysis": { "type": "object" },
-        "status": { "type": "string", "enum": ["pending", "processed"] },
+        "impactPoints": { "type": "number" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["ngoId", "content", "status"]
+      "required": ["uid", "displayName", "email", "role", "impactPoints", "createdAt"]
     },
     "Task": {
       "title": "Task",
-      "description": "Individual task extracted from a report",
+      "description": "A community task created by an NGO",
       "type": "object",
       "properties": {
-        "reportId": { "type": "string" },
         "ngoId": { "type": "string" },
-        "volunteerId": { "type": "string" },
+        "ngoName": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string", "enum": ["open", "active", "completed"] },
+        "urgency": { "type": "string", "enum": ["low", "medium", "high"] },
+        "location": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        },
+        "aiDetails": {
+          "type": "object",
+          "properties": {
+            "recommendedTeamSize": { "type": "number" },
+            "minMembers": { "type": "number" },
+            "checklist": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "currentRadius": { "type": "number" },
+        "timerExpiresAt": { "type": "string", "format": "date-time" },
+        "squadId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ngoId", "ngoName", "title", "description", "status", "urgency", "location", "aiDetails", "currentRadius", "createdAt"]
+    },
+    "Squad": {
+      "title": "Squad",
+      "description": "A team of volunteers working on a task",
+      "type": "object",
+      "properties": {
+        "taskId": { "type": "string" },
+        "leadId": { "type": "string" },
+        "leadName": { "type": "string" },
+        "memberIds": { "type": "array", "items": { "type": "string" } },
+        "status": { "type": "string", "enum": ["recruiting", "executing", "completed"] },
+        "maxMembers": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["taskId", "leadId", "leadName", "memberIds", "status", "maxMembers", "createdAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A message in a squad chat",
+      "type": "object",
+      "properties": {
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderId", "senderName", "text", "createdAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "Alert for volunteers or NGOs",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "type": { "type": "string", "enum": ["squad_invite", "critical_alert"] },
+        "message": { "type": "string" },
+        "taskId": { "type": "string" },
+        "squadId": { "type": "string" },
+        "status": { "type": "string", "enum": ["unread", "read"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "type", "message", "status", "createdAt"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "An NGO report detailing community needs",
+      "type": "object",
+      "properties": {
+        "ngoId": { "type": "string" },
+        "content": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "processed"] },
+        "analysis": { "type": "array", "items": { "$ref": "#/entities/AnalysisResult" } },
+        "location": {
+          "type": "object",
+          "properties": {
+            "lat": { "type": "number" },
+            "lng": { "type": "number" },
+            "area": { "type": "string" },
+            "district": { "type": "string" },
+            "state": { "type": "string" }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ngoId", "content", "status", "createdAt"]
+    },
+    "AnalysisResult": {
+      "title": "AnalysisResult",
+      "description": "Output of AI analysis on a report",
+      "type": "object",
+      "properties": {
         "title": { "type": "string" },
         "description": { "type": "string" },
         "priority": { "type": "string", "enum": ["High", "Medium", "Low"] },
         "urgency": { "type": "string", "enum": ["Immediate", "Soon", "Planned"] },
-        "status": { "type": "string", "enum": ["pending", "accepted", "in-progress", "completed", "cancelled"] },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "updatedAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["reportId", "ngoId", "title", "status"]
+        "complexity": { "type": "string", "enum": ["Simple", "Standard", "Complex"] },
+        "beneficiaries": { "type": "number" },
+        "recommendedTeamSize": { "type": "number" },
+        "minMembers": { "type": "number" },
+        "checklist": { "type": "array", "items": { "type": "string" } }
+      }
     }
   },
   "firestore": {
-    "/users/{userId}": {
-      "schema": "User",
-      "description": "User profiles"
-    },
-    "/reports/{reportId}": {
-      "schema": "Report",
-      "description": "NGO reports and analysis"
-    },
-    "/tasks/{taskId}": {
-      "schema": "Task",
-      "description": "Individual tasks extracted from reports"
-    }
+    "/users/{userId}": { "schema": "User", "description": "Users of the app" },
+    "/tasks/{taskId}": { "schema": "Task", "description": "Tasks created by NGOs" },
+    "/squads/{squadId}": { "schema": "Squad", "description": "Squads formed for tasks" },
+    "/squads/{squadId}/messages/{messageId}": { "schema": "Message", "description": "Chat messages within a squad" },
+    "/notifications/{notificationId}": { "schema": "Notification", "description": "User notifications" },
+    "/reports/{reportId}": { "schema": "Report", "description": "Reports uploaded by NGOs for analysis" }
   }
 }

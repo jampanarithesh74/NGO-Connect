@@ -9,4 +9,16 @@ export const auth = getAuth(app);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const googleProvider = new GoogleAuthProvider();
 
+async function testConnection() {
+  try {
+    const { doc, getDocFromServer } = await import('firebase/firestore');
+    await getDocFromServer(doc(db, 'test', 'connection'));
+  } catch (error: any) {
+    if (error.message?.includes('the client is offline')) {
+      console.error("Please check your Firebase configuration.");
+    }
+  }
+}
+testConnection();
+
 export default app;

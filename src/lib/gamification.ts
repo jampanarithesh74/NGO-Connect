@@ -7,8 +7,8 @@ export const BADGE_CONFIG = [
   { id: 'community_pillar', label: 'Community Pillar', description: 'Completed 10 total tasks.' },
 ];
 
-export async function awardPointsAndBadges(volunteerId: string, taskPriority: string) {
-  console.log(`Awarding points to ${volunteerId} for ${taskPriority} priority task`);
+export async function awardPointsAndBadges(volunteerId: string, task: any, isLead: boolean = false) {
+  console.log(`Awarding points to ${volunteerId} for task: ${task.title}. Lead: ${isLead}`);
   try {
     const volunteerRef = doc(db, 'users', volunteerId);
     const volunteerSnap = await getDoc(volunteerRef);
@@ -19,11 +19,29 @@ export async function awardPointsAndBadges(volunteerId: string, taskPriority: st
     }
     
     const volunteerData = volunteerSnap.data();
-    const pointsToAdd = taskPriority === 'High' ? 50 : taskPriority === 'Medium' ? 30 : 10;
-    const currentPoints = Number(volunteerData.totalPoints || 0);
+    
+    // Unified Impact Score Formula:
+    // 1. Urgency/Priority Base
+    const priorityPoints = task.priority === 'High' ? 50 : task.priority === 'Medium' ? 30 : 10;
+    
+    // 2. Reach Multiple (Beneficiaries * 2, cap 60)
+    const reachPoints = Math.min(60, (Number(task.beneficiaries) || 0) * 2);
+    
+    // 3. Complexity Bonus
+    const complexityPoints = task.complexity === 'Complex' ? 50 : task.complexity === 'Standard' ? 20 : 0;
+    
+    let pointsToAdd = priorityPoints + reachPoints + complexityPoints;
+
+    // 4. Lead Bonus
+    if (isLead) {
+      pointsToAdd += 50; // Lead bonus
+    }
+    
+    const currentPoints = Number(volunteerData.impactPoints ?? volunteerData.totalPoints ?? 0);
     const newPoints = currentPoints + pointsToAdd;
     
-    console.log(`Current points: ${currentPoints}, Adding: ${pointsToAdd}, New total: ${newPoints}`);
+    console.log(`Score Breakdown: Priority(${priorityPoints}) + Reach(${reachPoints}) + Complexity(${complexityPoints}) = ${pointsToAdd}`);
+    console.log(`Current points: ${currentPoints}, New total: ${newPoints}`);
     
     // Fetch ALL tasks for this volunteer to count accurately
     const tasksQuery = query(
@@ -68,7 +86,8 @@ export async function awardPointsAndBadges(volunteerId: string, taskPriority: st
     }
     
     await updateDoc(volunteerRef, {
-      totalPoints: newPoints,
+      impactPoints: newPoints,
+      totalPoints: newPoints, // Maintain legacy for now
       earnedBadges: newBadges,
       updatedAt: serverTimestamp()
     });

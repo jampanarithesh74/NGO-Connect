@@ -18,7 +18,7 @@ function AppContent() {
     );
   }
 
-  if (!user) {
+  if (!user || (user && userRole === null && !loading)) {
     return <LoginPage />;
   }
 

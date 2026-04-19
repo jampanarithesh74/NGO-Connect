@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
@@ -14,14 +14,60 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
-import { LogIn, UserPlus, Mail, Lock, Heart, Building2, Chrome } from 'lucide-react';
+import { LogIn, UserPlus, Mail, Lock, Heart, Building2, Chrome, Loader2 } from 'lucide-react';
 import { motion } from 'motion/react';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [role, setRole] = useState<'ngo' | 'volunteer' | null>(null);
+  const [role, setRoleState] = useState<'ngo' | 'volunteer' | null>(() => {
+    return localStorage.getItem('onboarding_role') as any;
+  });
+
+  const setRole = (newRole: 'ngo' | 'volunteer' | null) => {
+    setRoleState(newRole);
+    if (newRole) {
+      localStorage.setItem('onboarding_role', newRole);
+    } else {
+      localStorage.removeItem('onboarding_role');
+    }
+  };
+
+  // Logic to handle "Logged in but no doc"
+  useEffect(() => {
+    const completeOnboarding = async () => {
+      const user = auth.currentUser;
+      if (user && role && !loading) {
+        setLoading(true);
+        try {
+          const userDoc = await getDoc(doc(db, 'users', user.uid));
+          if (!userDoc.exists()) {
+            console.log("Creating missing user doc for:", user.uid, role);
+            await setDoc(doc(db, 'users', user.uid), {
+              uid: user.uid,
+              email: user.email,
+              displayName: user.displayName,
+              photoURL: user.photoURL,
+              role: role,
+              impactPoints: 0,
+              totalPoints: 0,
+              earnedBadges: [],
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+            toast.success("Profile setup complete!");
+          }
+        } catch (err) {
+          console.error("Auto-onboarding error:", err);
+        } finally {
+          setLoading(false);
+        }
+      }
+    };
+
+    completeOnboarding();
+  }, [role]);
 
   const handleEmailAuth = async (type: 'login' | 'signup') => {
     if (!role) {
@@ -43,8 +89,9 @@ export default function LoginPage() {
           uid: userCredential.user.uid,
           email: userCredential.user.email,
           role: role,
-          totalPoints: role === 'volunteer' ? 0 : null,
-          earnedBadges: role === 'volunteer' ? [] : null,
+          impactPoints: 0,
+          totalPoints: 0,
+          earnedBadges: [],
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -86,8 +133,9 @@ export default function LoginPage() {
           displayName: user.displayName,
           photoURL: user.photoURL,
           role: role,
-          totalPoints: role === 'volunteer' ? 0 : null,
-          earnedBadges: role === 'volunteer' ? [] : null,
+          impactPoints: 0,
+          totalPoints: 0,
+          earnedBadges: [],
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });

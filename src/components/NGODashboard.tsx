@@ -64,6 +64,11 @@ interface AnalysisResult {
   description: string;
   priority: 'High' | 'Medium' | 'Low';
   urgency: 'Immediate' | 'Soon' | 'Planned';
+  complexity: 'Simple' | 'Standard' | 'Complex';
+  beneficiaries: number;
+  recommendedTeamSize: number;
+  minMembers: number;
+  checklist: string[];
 }
 
 interface Report {
@@ -86,12 +91,23 @@ interface Task {
   id: string;
   reportId: string;
   ngoId: string;
+  ngoName?: string;
   volunteerId?: string;
   title: string;
   description: string;
   priority: 'High' | 'Medium' | 'Low';
   urgency: 'Immediate' | 'Soon' | 'Planned';
-  status: 'pending' | 'accepted' | 'in-progress' | 'pending_approval' | 'completed' | 'cancelled';
+  complexity: 'Simple' | 'Standard' | 'Complex';
+  beneficiaries: number;
+  status: 'pending' | 'accepted' | 'active' | 'pending_approval' | 'completed' | 'cancelled';
+  aiDetails: {
+    recommendedTeamSize: number;
+    minMembers: number;
+    checklist: string[];
+  };
+  currentRadius: number;
+  timerExpiresAt?: Timestamp;
+  squadId?: string;
   createdAt: Timestamp;
   updatedAt: Timestamp;
   proofImageUrl?: string;
@@ -134,6 +150,8 @@ export default function NGODashboard() {
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [editDescription, setEditDescription] = useState('');
+  const [editBeneficiaries, setEditBeneficiaries] = useState(0);
+  const [editComplexity, setEditComplexity] = useState<'Simple' | 'Standard' | 'Complex'>('Standard');
 
   useEffect(() => {
     if (!user) return;
@@ -257,7 +275,7 @@ export default function NGODashboard() {
       if (newStatus === 'completed' && task.volunteerId) {
         const loadingToast = toast.loading("Awarding volunteer impact points...");
         try {
-          const result = await awardPointsAndBadges(task.volunteerId, task.priority);
+          const result = await awardPointsAndBadges(task.volunteerId, task);
           toast.dismiss(loadingToast);
           if (result) {
             toast.success(`Volunteer awarded ${result.pointsAdded} points!`);
@@ -282,6 +300,8 @@ export default function NGODashboard() {
     setEditingTask(task);
     setEditTitle(task.title);
     setEditDescription(task.description);
+    setEditBeneficiaries(task.beneficiaries || 0);
+    setEditComplexity(task.complexity || 'Standard');
   };
 
   const handleSaveTaskEdit = async () => {
@@ -290,6 +310,8 @@ export default function NGODashboard() {
       await updateDoc(doc(db, 'tasks', editingTask.id), {
         title: editTitle,
         description: editDescription,
+        beneficiaries: editBeneficiaries,
+        complexity: editComplexity,
         updatedAt: serverTimestamp()
       });
       toast.success("Task updated successfully");
@@ -308,17 +330,29 @@ export default function NGODashboard() {
         status: 'completed',
         updatedAt: serverTimestamp()
       });
-      console.log("Task status updated to completed");
 
-      // 2. Award points to the volunteer
-      if (task.volunteerId) {
-        console.log("Awarding points to volunteer:", task.volunteerId);
-        const result = await awardPointsAndBadges(task.volunteerId, task.priority);
-        if (result) {
-          toast.success(`Task verified! Volunteer awarded ${result.pointsAdded} points.`);
-        } else {
-          toast.success(`Task verified and completed!`);
+      // 2. Award points
+      if (task.squadId) {
+        const squadSnap = await getDoc(doc(db, 'squads', task.squadId));
+        if (squadSnap.exists()) {
+          const squad = squadSnap.data();
+          const memberIds = squad.memberIds as string[];
+          const leadId = squad.leadId as string;
+
+          for (const memberId of memberIds) {
+            await awardPointsAndBadges(memberId, task, memberId === leadId);
+          }
+          
+          await updateDoc(doc(db, 'squads', task.squadId), {
+            status: 'completed',
+            updatedAt: serverTimestamp()
+          });
+          toast.success(`Task verified! Squad members awarded base points + lead bonus.`);
         }
+      } else if (task.volunteerId) {
+        // Solo task
+        await awardPointsAndBadges(task.volunteerId, task, false);
+        toast.success(`Task verified! Solo volunteer awarded base points.`);
       }
 
       setIsReviewDialogOpen(false);
@@ -342,7 +376,7 @@ export default function NGODashboard() {
     setIsProcessingApproval(true);
     try {
       await updateDoc(doc(db, 'tasks', task.id), {
-        status: 'in-progress', // Send back to in-progress
+        status: 'active', // Send back to active
         rejectionReason: rejectionReason,
         updatedAt: serverTimestamp()
       });
@@ -407,8 +441,13 @@ export default function NGODashboard() {
         2. A brief description (incorporate location context if relevant).
         3. Priority (High, Medium, or Low).
         4. Urgency (Immediate, Soon, or Planned).
+        5. Complexity (Simple: <1hr, Standard: 1-4hrs, Complex: >4hrs/hard labor).
+        6. Estimated number of Beneficiaries (people reached).
+        7. Recommended team size (integer).
+        8. Minimum required members (integer).
+        9. A checklist of required skills and equipment (array of strings).
         
-        Format the output as a JSON array of objects with keys: title, description, priority, urgency.
+        Format the output as a JSON array of objects with keys: title, description, priority, urgency, complexity, beneficiaries, recommendedTeamSize, minMembers, checklist.
         
         Report:
         ${reportText}
@@ -446,11 +485,22 @@ export default function NGODashboard() {
           const taskData: any = {
             reportId: reportRef.id,
             ngoId: user?.uid,
+            ngoName: user?.displayName || user?.email?.split('@')[0],
             title: item.title,
             description: item.description,
             priority: item.priority,
             urgency: item.urgency,
+            complexity: item.complexity || 'Standard',
+            beneficiaries: item.beneficiaries || 0,
             status: 'pending',
+            memberIds: [],
+            aiDetails: {
+              recommendedTeamSize: item.recommendedTeamSize || 1,
+              minMembers: item.minMembers || 1,
+              checklist: item.checklist || []
+            },
+            currentRadius: 10,
+            timerExpiresAt: Timestamp.fromMillis(Date.now() + 30 * 60 * 1000), // 30 min initial timer
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
             location: sanitizedLocation
@@ -871,16 +921,52 @@ export default function NGODashboard() {
                               }`}>
                                 {result.priority} Priority
                               </span>
-                              <span className="text-[10px] font-medium text-slate-400 uppercase">
-                                {result.urgency}
-                              </span>
+                              <div className="flex flex-col items-end gap-1">
+                                <span className="text-[10px] font-medium text-slate-400 uppercase">
+                                  {result.urgency}
+                                </span>
+                                <span className="text-[10px] font-bold text-primary uppercase">
+                                  Impact: {10 + (result.priority === 'High' ? 40 : result.priority === 'Medium' ? 20 : 0) + Math.min(60, (result.beneficiaries || 0) * 2) + (result.complexity === 'Complex' ? 50 : result.complexity === 'Standard' ? 20 : 0)} Pts
+                                </span>
+                              </div>
                             </div>
                             <CardTitle className="text-lg">{result.title}</CardTitle>
                           </CardHeader>
                           <CardContent>
-                            <p className="text-sm text-slate-600 leading-relaxed">
+                            <p className="text-sm text-slate-600 leading-relaxed mb-4">
                               {result.description}
                             </p>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="p-2 rounded bg-slate-50 border border-slate-100">
+                                <Label className="text-[10px] text-slate-400 uppercase font-bold">Reach</Label>
+                                <Input 
+                                  type="number" 
+                                  className="h-7 text-xs mt-1 bg-white" 
+                                  value={result.beneficiaries} 
+                                  onChange={(e) => {
+                                    const newResults = [...analysisResults];
+                                    newResults[index].beneficiaries = parseInt(e.target.value) || 0;
+                                    setAnalysisResults(newResults);
+                                  }}
+                                />
+                              </div>
+                              <div className="p-2 rounded bg-slate-50 border border-slate-100">
+                                <Label className="text-[10px] text-slate-400 uppercase font-bold">Effort</Label>
+                                <select 
+                                  className="w-full h-7 text-xs mt-1 bg-white border rounded px-1"
+                                  value={result.complexity}
+                                  onChange={(e) => {
+                                    const newResults = [...analysisResults];
+                                    newResults[index].complexity = e.target.value as any;
+                                    setAnalysisResults(newResults);
+                                  }}
+                                >
+                                  <option value="Simple">Simple (&lt;1h)</option>
+                                  <option value="Standard">Standard (1-4h)</option>
+                                  <option value="Complex">Complex (&gt;4h)</option>
+                                </select>
+                              </div>
+                            </div>
                           </CardContent>
                         </Card>
                       </motion.div>
@@ -941,7 +1027,7 @@ export default function NGODashboard() {
                           <div className="flex items-center gap-4">
                             <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${
                               report.status === 'completed' ? 'bg-green-100 text-green-700' : 
-                              report.status === 'in-progress' ? 'bg-blue-100 text-blue-700' : 
+                              report.status === 'active' ? 'bg-blue-100 text-blue-700' : 
                               'bg-amber-100 text-amber-700'
                             }`}>
                               {report.status}
@@ -1033,13 +1119,13 @@ export default function NGODashboard() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {tasks.filter(t => t.status === (activeSection === 'progress' ? 'in-progress' : 'completed')).length === 0 ? (
+                {tasks.filter(t => t.status === (activeSection === 'progress' ? 'active' : 'completed')).length === 0 ? (
                   <div className="col-span-full py-20 text-center text-slate-400">
                     <p>No tasks found in this section.</p>
                   </div>
                 ) : (
                   tasks
-                    .filter(t => t.status === (activeSection === 'progress' ? 'in-progress' : 'completed'))
+                    .filter(t => t.status === (activeSection === 'progress' ? 'active' : 'completed'))
                     .map((task) => (
                       <Card key={task.id} className="border-l-4" 
                         style={{ 
@@ -1070,7 +1156,7 @@ export default function NGODashboard() {
                                   <Edit2 className="mr-2 h-4 w-4" />
                                   Edit Details
                                 </DropdownMenuItem>
-                                {task.status === 'in-progress' && (
+                                {task.status === 'active' && (
                                   <DropdownMenuItem onClick={() => handleUpdateTaskStatus(task.id, 'completed')}>
                                     <CheckCircle2 className="mr-2 h-4 w-4 text-green-600" />
                                     Mark Completed
@@ -1085,7 +1171,17 @@ export default function NGODashboard() {
                               </DropdownMenuContent>
                             </DropdownMenu>
                           </div>
-                          <CardTitle className="text-lg">{task.title}</CardTitle>
+                          <div className="flex flex-col mt-2">
+                            <CardTitle className="text-lg">{task.title}</CardTitle>
+                            <div className="flex gap-2 mt-1">
+                              <span className="text-[10px] font-bold text-primary uppercase bg-primary/5 px-2 py-0.5 rounded">
+                                Reward: {10 + (task.priority === 'High' ? 40 : task.priority === 'Medium' ? 20 : 0) + Math.min(60, (task.beneficiaries || 0) * 2) + (task.complexity === 'Complex' ? 50 : task.complexity === 'Standard' ? 20 : 0)} Pts
+                              </span>
+                              <span className="text-[10px] font-medium text-slate-400 uppercase flex items-center gap-1">
+                                <Users className="w-3 h-3" /> {task.beneficiaries || 0} reach
+                              </span>
+                            </div>
+                          </div>
                         </CardHeader>
                         <CardContent>
                           <p className="text-sm text-slate-600 line-clamp-3">
@@ -1104,7 +1200,7 @@ export default function NGODashboard() {
                             {task.createdAt?.toDate().toLocaleDateString()}
                           </div>
                           {task.status === 'pending' && (
-                            <Button size="sm" onClick={() => handleUpdateTaskStatus(task.id, 'in-progress')}>
+                            <Button size="sm" onClick={() => handleUpdateTaskStatus(task.id, 'active')}>
                               <Play className="w-3 h-3 mr-1" />
                               Start
                             </Button>
@@ -1144,6 +1240,31 @@ export default function NGODashboard() {
                   onChange={(e) => setEditDescription(e.target.value)} 
                   rows={4}
                 />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-reach">Reach (Beneficiaries)</Label>
+                  <Input 
+                    id="edit-reach" 
+                    type="number"
+                    value={editBeneficiaries} 
+                    onChange={(e) => setEditBeneficiaries(parseInt(e.target.value) || 0)} 
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-effort">Effort (Complexity)</Label>
+                  <select 
+                    id="edit-effort"
+                    className="w-full h-10 px-3 rounded-md border border-input bg-background"
+                    value={editComplexity}
+                    onChange={(e) => setEditComplexity(e.target.value as any)}
+                  >
+                    <option value="Simple">Simple</option>
+                    <option value="Standard">Standard</option>
+                    <option value="Complex">Complex</option>
+                  </select>
+                </div>
               </div>
             </div>
             <DialogFooter>
@@ -1189,6 +1310,45 @@ export default function NGODashboard() {
                       <Label className="text-xs text-slate-400 uppercase font-bold tracking-wider">Volunteer Notes</Label>
                       <div className="mt-2 p-4 rounded-xl bg-slate-50 border border-slate-100 text-sm italic text-slate-700 min-h-[100px]">
                         "{reviewingTask.completionNotes || "No notes provided by volunteer."}"
+                      </div>
+                    </div>
+
+                    <div className="p-4 rounded-xl bg-amber-50 border border-amber-100 space-y-3">
+                      <Label className="text-xs text-amber-600 uppercase font-bold tracking-wider flex items-center gap-2">
+                        <Users className="w-3 h-3" /> Verify Impact Metrics
+                      </Label>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-1">
+                          <Label className="text-[10px] text-slate-500">Reach (Beneficiaries)</Label>
+                          <Input 
+                            type="number" 
+                            className="h-8 text-xs" 
+                            value={reviewingTask.beneficiaries} 
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value) || 0;
+                              setReviewingTask({...reviewingTask, beneficiaries: val});
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[10px] text-slate-500">Effort (Complexity)</Label>
+                          <select 
+                            className="w-full h-8 text-xs bg-white border rounded px-2"
+                            value={reviewingTask.complexity}
+                            onChange={(e) => {
+                              setReviewingTask({...reviewingTask, complexity: e.target.value as any});
+                            }}
+                          >
+                            <option value="Simple">Simple</option>
+                            <option value="Standard">Standard</option>
+                            <option value="Complex">Complex</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div className="pt-2 text-center">
+                        <p className="text-xs font-bold text-amber-700">
+                          Estimated Reward: {10 + (reviewingTask.priority === 'High' ? 40 : reviewingTask.priority === 'Medium' ? 20 : 0) + Math.min(60, (reviewingTask.beneficiaries || 0) * 2) + (reviewingTask.complexity === 'Complex' ? 50 : reviewingTask.complexity === 'Standard' ? 20 : 0)} Points
+                        </p>
                       </div>
                     </div>
                   </div>
