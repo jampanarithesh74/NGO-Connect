@@ -31,7 +31,10 @@
         "title": { "type": "string" },
         "description": { "type": "string" },
         "status": { "type": "string", "enum": ["open", "active", "completed"] },
-        "urgency": { "type": "string", "enum": ["low", "medium", "high"] },
+        "urgency": { "type": "string", "enum": ["Immediate", "Soon", "Planned"] },
+        "priority": { "type": "string", "enum": ["High", "Medium", "Low"] },
+        "category": { "type": "string", "enum": ["Vital", "Essential", "Stabilizing"] },
+        "deadline": { "type": "string", "format": "date-time" },
         "location": {
           "type": "object",
           "properties": {
@@ -128,6 +131,8 @@
         "description": { "type": "string" },
         "priority": { "type": "string", "enum": ["High", "Medium", "Low"] },
         "urgency": { "type": "string", "enum": ["Immediate", "Soon", "Planned"] },
+        "category": { "type": "string", "enum": ["Vital", "Essential", "Stabilizing"] },
+        "deadline": { "type": "string", "description": "ISO 8601 date string relative to current time" },
         "complexity": { "type": "string", "enum": ["Simple", "Standard", "Complex"] },
         "beneficiaries": { "type": "number" },
         "recommendedTeamSize": { "type": "number" },

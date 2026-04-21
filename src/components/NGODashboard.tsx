@@ -64,6 +64,8 @@ interface AnalysisResult {
   description: string;
   priority: 'High' | 'Medium' | 'Low';
   urgency: 'Immediate' | 'Soon' | 'Planned';
+  category: 'Vital' | 'Essential' | 'Stabilizing';
+  deadline: string;
   complexity: 'Simple' | 'Standard' | 'Complex';
   beneficiaries: number;
   recommendedTeamSize: number;
@@ -97,6 +99,8 @@ interface Task {
   description: string;
   priority: 'High' | 'Medium' | 'Low';
   urgency: 'Immediate' | 'Soon' | 'Planned';
+  category?: 'Vital' | 'Essential' | 'Stabilizing';
+  deadline?: Timestamp;
   complexity: 'Simple' | 'Standard' | 'Complex';
   beneficiaries: number;
   status: 'pending' | 'accepted' | 'active' | 'pending_approval' | 'completed' | 'cancelled';
@@ -108,6 +112,7 @@ interface Task {
   currentRadius: number;
   timerExpiresAt?: Timestamp;
   squadId?: string;
+  handledByNGO?: boolean;
   createdAt: Timestamp;
   updatedAt: Timestamp;
   proofImageUrl?: string;
@@ -140,11 +145,46 @@ export default function NGODashboard() {
   const [isGeocoding, setIsGeocoding] = useState(false);
   const [isReverseGeocoding, setIsReverseGeocoding] = useState(false);
   
+  const isTaskAtRisk = (task: Task) => {
+    if (!['pending', 'accepted', 'active'].includes(task.status) || !task.deadline) return false;
+    const now = Date.now();
+    const created = task.createdAt.toMillis();
+    const deadline = task.deadline.toMillis();
+    const totalTime = deadline - created;
+    const elapsed = now - created;
+    
+    // If 75% of the time has passed and still not completed
+    // Or if it's within 6 hours of deadline
+    const isLateInCycle = totalTime > 0 && (elapsed / totalTime) > 0.75;
+    const isSoonValue = deadline - now < 1000 * 60 * 60 * 6; // 6 hours
+    
+    return isLateInCycle || isSoonValue;
+  };
+  
   // Verification state
   const [isReviewDialogOpen, setIsReviewDialogOpen] = useState(false);
   const [reviewingTask, setReviewingTask] = useState<Task | null>(null);
   const [rejectionReason, setRejectionReason] = useState('');
   const [isProcessingApproval, setIsProcessingApproval] = useState(false);
+  const [lastNotificationTime, setLastNotificationTime] = useState(0);
+
+  // Monitoring for stale tasks
+  useEffect(() => {
+    const staleTasks = tasks.filter(t => isTaskAtRisk(t));
+    const now = Date.now();
+    
+    // Notify every 5 minutes if there are stale tasks and at least one is truly "At Risk"
+    if (staleTasks.length > 0 && (now - lastNotificationTime) > 1000 * 60 * 5) {
+      const titles = staleTasks.map(t => t.title).slice(0, 3).join(', ');
+      const overflow = staleTasks.length > 3 ? ` and ${staleTasks.length - 3} more` : '';
+      
+      toast.error(`CRITICAL: At Risk Tasks!`, {
+        description: `${staleTasks.length} task(s) need attention: ${titles}${overflow}`,
+        duration: 8000
+      });
+      setLastNotificationTime(now);
+    }
+  }, [tasks, activeSection, lastNotificationTime]);
 
   // Editing state
   const [editingTask, setEditingTask] = useState<Task | null>(null);
@@ -261,18 +301,25 @@ export default function NGODashboard() {
     }
   };
 
-  const handleUpdateTaskStatus = async (taskId: string, newStatus: Task['status']) => {
+  const handleUpdateTaskStatus = async (taskId: string, newStatus: Task['status'], isNGOSelfAssign: boolean = false) => {
     try {
       const task = tasks.find(t => t.id === taskId);
       if (!task) return;
 
-      await updateDoc(doc(db, 'tasks', taskId), {
+      const updateData: any = {
         status: newStatus,
         updatedAt: serverTimestamp()
-      });
+      };
 
-      // Award points and badges if completed
-      if (newStatus === 'completed' && task.volunteerId) {
+      if (isNGOSelfAssign) {
+        updateData.handledByNGO = true;
+        // If an NGO starts it, we move it to active but mark it as handled by them
+      }
+
+      await updateDoc(doc(db, 'tasks', taskId), updateData);
+
+      // Award points and badges if completed and was a volunteer task
+      if (newStatus === 'completed' && task.volunteerId && !task.handledByNGO) {
         const loadingToast = toast.loading("Awarding volunteer impact points...");
         try {
           const result = await awardPointsAndBadges(task.volunteerId, task);
@@ -431,23 +478,37 @@ export default function NGODashboard() {
     setIsAnalyzing(true);
     try {
       const locationContext = `Location Context: Area: ${locationData.area}, Landmark: ${locationData.landmark}, District: ${locationData.district}, State: ${locationData.state}`;
+      const currentTime = new Date().toISOString();
 
       const prompt = `
         Analyze the following NGO report and extract key action items or tasks. 
+        Current Time Context: ${currentTime}
         ${locationContext}
+        
+        CRITICAL TRIAGE RULES:
+        1. "Vital": Life-saving (Medical, Water, Search & Rescue).
+        2. "Essential": Basic needs (Food, Shelter).
+        3. "Stabilizing": Logistics, Cleaning.
+        
+        TEMPORAL TRIAGE:
+        - If task is needed ASAP or within 12h: Urgency = "Immediate", Priority = "High".
+        - If task is needed "next week" or "later": Urgency = "Planned", Priority = "Low" or "Medium" (even if it's Food).
+        - Medical aid is ALWAYS high priority UNLESS specified for a much later date.
         
         For each task, provide:
         1. A concise title.
-        2. A brief description (incorporate location context if relevant).
-        3. Priority (High, Medium, or Low).
-        4. Urgency (Immediate, Soon, or Planned).
-        5. Complexity (Simple: <1hr, Standard: 1-4hrs, Complex: >4hrs/hard labor).
-        6. Estimated number of Beneficiaries (people reached).
-        7. Recommended team size (integer).
-        8. Minimum required members (integer).
-        9. A checklist of required skills and equipment (array of strings).
+        2. A brief description.
+        3. Priority (High, Medium, or Low) - calculated based on time + impact.
+        4. Urgency (Immediate, Soon, or Planned) - based on mentioned timing.
+        5. Category (Vital, Essential, or Stabilizing).
+        6. Deadline (ISO 8601 string) - Estimate this based on the report. If no time mentioned, default to 24h from now for Vital, 3 days for Essential, 7 days for Stabilizing.
+        7. Complexity (Simple: <1hr, Standard: 1-4hrs, Complex: >4hrs/hard labor).
+        8. Estimated number of Beneficiaries.
+        9. Recommended team size (integer).
+        10. Minimum required members (integer).
+        11. A checklist of required skills and equipment (array of strings).
         
-        Format the output as a JSON array of objects with keys: title, description, priority, urgency, complexity, beneficiaries, recommendedTeamSize, minMembers, checklist.
+        Format the output as a JSON array of objects with keys: title, description, priority, urgency, category, deadline, complexity, beneficiaries, recommendedTeamSize, minMembers, checklist.
         
         Report:
         ${reportText}
@@ -490,6 +551,8 @@ export default function NGODashboard() {
             description: item.description,
             priority: item.priority,
             urgency: item.urgency,
+            category: item.category || 'Essential',
+            deadline: item.deadline ? Timestamp.fromDate(new Date(item.deadline)) : Timestamp.fromMillis(Date.now() + 72 * 60 * 60 * 1000),
             complexity: item.complexity || 'Standard',
             beneficiaries: item.beneficiaries || 0,
             status: 'pending',
@@ -547,20 +610,30 @@ export default function NGODashboard() {
           </div>
           
           <nav className="space-y-1">
-            {sidebarItems.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setActiveSection(item.id as Section)}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all ${
-                  activeSection === item.id 
-                    ? 'bg-primary text-primary-foreground shadow-md' 
-                    : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                <item.icon className="w-5 h-5" />
-                {item.label}
-              </button>
-            ))}
+            {sidebarItems.map((item) => {
+              const Icon = item.icon;
+              const hasAtRiskTasks = item.id === 'progress' && tasks.some(t => isTaskAtRisk(t));
+              
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveSection(item.id as Section)}
+                  className={`w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm font-medium transition-all ${
+                    activeSection === item.id 
+                      ? 'bg-primary text-primary-foreground shadow-md' 
+                      : 'text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Icon className="w-5 h-5" />
+                    {item.label}
+                  </div>
+                  {hasAtRiskTasks && (
+                    <div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]" />
+                  )}
+                </button>
+              );
+            })}
           </nav>
         </div>
         
@@ -1082,8 +1155,23 @@ export default function NGODashboard() {
                               <span className="text-[10px] font-medium text-slate-400 uppercase">
                                 {result.urgency}
                               </span>
+                              {result.category && (
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                                  result.category === 'Vital' ? 'bg-purple-100 text-purple-700' :
+                                  result.category === 'Essential' ? 'bg-blue-100 text-blue-700' :
+                                  'bg-slate-100 text-slate-700'
+                                }`}>
+                                  {result.category}
+                                </span>
+                              )}
                             </div>
                             <CardTitle className="text-lg">{result.title}</CardTitle>
+                            {result.deadline && (
+                              <div className="text-[10px] text-slate-400 mt-1 flex items-center gap-1">
+                                <Clock className="w-3 h-3" />
+                                Target: {new Date(result.deadline).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                              </div>
+                            )}
                           </CardHeader>
                           <CardContent>
                             <p className="text-sm text-slate-600 leading-relaxed">
@@ -1119,19 +1207,21 @@ export default function NGODashboard() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {tasks.filter(t => t.status === (activeSection === 'progress' ? 'active' : 'completed')).length === 0 ? (
+                {tasks.filter(t => (activeSection === 'progress' ? ['pending', 'accepted', 'active'].includes(t.status) : t.status === 'completed')).length === 0 ? (
                   <div className="col-span-full py-20 text-center text-slate-400">
                     <p>No tasks found in this section.</p>
                   </div>
                 ) : (
                   tasks
-                    .filter(t => t.status === (activeSection === 'progress' ? 'active' : 'completed'))
-                    .map((task) => (
-                      <Card key={task.id} className="border-l-4" 
-                        style={{ 
-                          borderLeftColor: task.priority === 'High' ? '#ef4444' : task.priority === 'Medium' ? '#f59e0b' : '#10b981' 
-                        }}
-                      >
+                    .filter(t => (activeSection === 'progress' ? ['pending', 'accepted', 'active'].includes(t.status) : t.status === 'completed'))
+                    .map((task) => {
+                      const atRisk = isTaskAtRisk(task);
+                      return (
+                        <Card key={task.id} className={`border-l-4 transition-all duration-300 ${atRisk ? 'bg-red-50 border-red-200 shadow-md ring-1 ring-red-100' : ''}`} 
+                          style={{ 
+                            borderLeftColor: atRisk ? '#ef4444' : (task.priority === 'High' ? '#ef4444' : task.priority === 'Medium' ? '#f59e0b' : '#10b981') 
+                          }}
+                        >
                         <CardHeader className="pb-2">
                           <div className="flex justify-between items-start mb-2">
                             <div className="flex gap-2">
@@ -1145,6 +1235,11 @@ export default function NGODashboard() {
                               <span className="text-[10px] font-medium text-slate-400 uppercase bg-slate-100 px-2 py-1 rounded">
                                 {task.urgency}
                               </span>
+                              {isTaskAtRisk(task) && (
+                                <span className="text-[10px] font-bold text-red-600 bg-red-50 px-2 py-1 rounded flex items-center gap-1 animate-pulse">
+                                  <AlertCircle className="w-3 h-3" /> AT RISK
+                                </span>
+                              )}
                             </div>
                             
                             <DropdownMenu>
@@ -1172,7 +1267,12 @@ export default function NGODashboard() {
                             </DropdownMenu>
                           </div>
                           <div className="flex flex-col mt-2">
-                            <CardTitle className="text-lg">{task.title}</CardTitle>
+                            <div className="flex items-center gap-2">
+                              <CardTitle className="text-lg">{task.title}</CardTitle>
+                              {task.handledByNGO && (
+                                <span className="text-[10px] bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded uppercase">NGO Internal</span>
+                              )}
+                            </div>
                             <div className="flex gap-2 mt-1">
                               <span className="text-[10px] font-bold text-primary uppercase bg-primary/5 px-2 py-0.5 rounded">
                                 Reward: {10 + (task.priority === 'High' ? 40 : task.priority === 'Medium' ? 20 : 0) + Math.min(60, (task.beneficiaries || 0) * 2) + (task.complexity === 'Complex' ? 50 : task.complexity === 'Standard' ? 20 : 0)} Pts
@@ -1187,10 +1287,16 @@ export default function NGODashboard() {
                           <p className="text-sm text-slate-600 line-clamp-3">
                             {task.description}
                           </p>
-                          {task.volunteerId && (
+                          {task.volunteerId && !task.handledByNGO && (
                             <div className="mt-4 flex items-center gap-2 text-xs text-slate-500 bg-slate-50 p-2 rounded">
                               <Users className="w-3 h-3" />
                               Assigned to Volunteer
+                            </div>
+                          )}
+                          {task.handledByNGO && (
+                            <div className="mt-4 flex items-center gap-2 text-xs text-indigo-500 bg-indigo-50 p-2 rounded font-medium">
+                              <LayoutDashboard className="w-3 h-3" />
+                              Handling Internally (NGO Staff)
                             </div>
                           )}
                         </CardContent>
@@ -1200,14 +1306,21 @@ export default function NGODashboard() {
                             {task.createdAt?.toDate().toLocaleDateString()}
                           </div>
                           {task.status === 'pending' && (
-                            <Button size="sm" onClick={() => handleUpdateTaskStatus(task.id, 'active')}>
+                            <Button size="sm" onClick={() => handleUpdateTaskStatus(task.id, 'active', true)}>
                               <Play className="w-3 h-3 mr-1" />
-                              Start
+                              Self-Assign
+                            </Button>
+                          )}
+                          {task.status === 'active' && task.handledByNGO && (
+                            <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700" onClick={() => handleUpdateTaskStatus(task.id, 'completed', true)}>
+                              <CheckCircle2 className="w-3 h-3 mr-1" />
+                              Finish Now
                             </Button>
                           )}
                         </CardFooter>
                       </Card>
-                    ))
+                    );
+                  })
                 )}
               </div>
             </motion.div>

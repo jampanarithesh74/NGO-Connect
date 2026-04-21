@@ -57,7 +57,8 @@ import {
   MessageCircle,
   Send,
   Check,
-  AlertCircle
+  AlertCircle,
+  Camera
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
@@ -90,6 +91,8 @@ interface Task {
   description: string;
   priority: 'High' | 'Medium' | 'Low';
   urgency: 'Immediate' | 'Soon' | 'Planned';
+  category?: 'Vital' | 'Essential' | 'Stabilizing';
+  deadline?: Timestamp;
   complexity: 'Simple' | 'Standard' | 'Complex';
   beneficiaries: number;
   status: 'pending' | 'accepted' | 'active' | 'pending_approval' | 'completed' | 'cancelled';
@@ -101,6 +104,7 @@ interface Task {
   currentRadius: number;
   timerExpiresAt?: Timestamp;
   squadId?: string;
+  handledByNGO?: boolean;
   createdAt: Timestamp;
   proofImageUrl?: string;
   completionNotes?: string;
@@ -205,6 +209,69 @@ export default function VolunteerDashboard() {
   const [proofImage, setProofImage] = useState<string | null>(null);
   const [completionNotes, setCompletionNotes] = useState('');
   const [isUploading, setIsUploading] = useState(false);
+  const [isWebcamActive, setIsWebcamActive] = useState(false);
+  const [isCameraLoading, setIsCameraLoading] = useState(false);
+  const videoRef = React.useRef<HTMLVideoElement>(null);
+  const streamRef = React.useRef<MediaStream | null>(null);
+
+  const startWebcam = async () => {
+    setIsCameraLoading(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          facingMode: 'environment',
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        } 
+      });
+      streamRef.current = stream;
+      setIsWebcamActive(true);
+      
+      // We need to wait for the video element to be rendered
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+      }, 100);
+    } catch (err) {
+      console.error("Error accessing webcam:", err);
+      toast.error("Camera access denied or not available. Please check browser permissions.");
+    } finally {
+      setIsCameraLoading(false);
+    }
+  };
+
+  const stopWebcam = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setIsWebcamActive(false);
+  };
+
+  const capturePhoto = () => {
+    if (videoRef.current) {
+      const canvas = document.createElement('canvas');
+      canvas.width = videoRef.current.videoWidth;
+      canvas.height = videoRef.current.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(videoRef.current, 0, 0);
+        const dataUrl = canvas.toDataURL('image/jpeg');
+        setProofImage(dataUrl);
+        stopWebcam();
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!isSubmitDialogOpen) {
+      stopWebcam();
+    }
+  }, [isSubmitDialogOpen]);
 
   // Fetch top volunteers for leaderboard
   useEffect(() => {
@@ -310,9 +377,35 @@ export default function VolunteerDashboard() {
     pendingTasksState.forEach(t => taskMap.set(t.id, t));
     personalTasksState.forEach(t => taskMap.set(t.id, t));
     squadTasksState.forEach(t => taskMap.set(t.id, t));
-    return Array.from(taskMap.values()).sort((a, b) => 
-      (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0)
-    );
+    
+    return Array.from(taskMap.values()).sort((a, b) => {
+      // 1. Extreme Urgency (Closest Deadline First)
+      const aDeadline = a.deadline?.toMillis() || Infinity;
+      const bDeadline = b.deadline?.toMillis() || Infinity;
+      
+      // If one has a deadline and the other doesn't, prioritized the one with deadline
+      if (aDeadline !== bDeadline) {
+        // If the difference is significant (e.g. 1 hour), prioritize by deadline
+        if (Math.abs(aDeadline - bDeadline) > 1000 * 60) {
+          return aDeadline - bDeadline;
+        }
+      }
+      
+      // 2. Impact Category
+      const categoryOrder: Record<string, number> = { 'Vital': 0, 'Essential': 1, 'Stabilizing': 2 };
+      const aCat = categoryOrder[a.category || 'Essential'] ?? 1;
+      const bCat = categoryOrder[b.category || 'Essential'] ?? 1;
+      if (aCat !== bCat) return aCat - bCat;
+
+      // 3. Status Order (Priority string)
+      const priorityOrder: Record<string, number> = { 'High': 0, 'Medium': 1, 'Low': 2 };
+      const aPrio = priorityOrder[a.priority] ?? 1;
+      const bPrio = priorityOrder[b.priority] ?? 1;
+      if (aPrio !== bPrio) return aPrio - bPrio;
+
+      // 4. Default to Recency
+      return (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0);
+    });
   }, [pendingTasksState, personalTasksState, squadTasksState]);
 
   // Fetch tasks and expansion logic
@@ -865,7 +958,29 @@ export default function VolunteerDashboard() {
       
       if (jsonMatch) {
         const matchedIds = JSON.parse(jsonMatch[0]);
-        const matched = allTasks.filter(t => matchedIds.includes(t.id));
+  const sortedTasks = useMemo(() => {
+    return [...pendingTasksState].sort((a, b) => {
+      // 1. Extreme Urgency (Closest Deadline First)
+      const aDeadline = a.deadline?.toMillis() || Infinity;
+      const bDeadline = b.deadline?.toMillis() || Infinity;
+      
+      if (Math.abs(aDeadline - bDeadline) > 1000 * 60 * 60) { // If more than 1h difference
+        return aDeadline - bDeadline;
+      }
+      
+      // 2. Impact Category
+      const categoryOrder = { 'Vital': 0, 'Essential': 1, 'Stabilizing': 2 };
+      const aCat = categoryOrder[a.category || 'Essential'];
+      const bCat = categoryOrder[b.category || 'Essential'];
+      if (aCat !== bCat) return aCat - bCat;
+
+      // 3. Status Order (Priority string)
+      const priorityOrder = { 'High': 0, 'Medium': 1, 'Low': 2 };
+      return priorityOrder[a.priority] - priorityOrder[b.priority];
+    });
+  }, [pendingTasksState]);
+
+  const matched = sortedTasks.filter(t => matchedIds.includes(t.id));
         setMatchedTasks(matched);
         toast.success(`Found ${matched.length} matched tasks!`);
       }
@@ -1387,7 +1502,7 @@ export default function VolunteerDashboard() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-                {allTasks.filter(t => t.status === 'pending').map((task) => (
+                {allTasks.filter(t => t.status === 'pending' && !t.handledByNGO).map((task) => (
                   <Card key={task.id} className="border-l-4" 
                     style={{ 
                       borderLeftColor: task.priority === 'High' ? '#ef4444' : task.priority === 'Medium' ? '#f59e0b' : '#10b981' 
@@ -1403,10 +1518,33 @@ export default function VolunteerDashboard() {
                           {task.priority} Priority
                         </span>
                         <div className="flex flex-col items-end gap-1">
-                          <span className="text-[10px] font-medium text-slate-400 uppercase">
-                            {task.urgency}
-                          </span>
-                          <span className="text-[10px] font-bold text-primary uppercase bg-primary/5 px-2 py-0.5 rounded">
+                          <div className="flex gap-1">
+                            <span className="text-[10px] font-medium text-slate-400 uppercase bg-slate-100 px-2 py-1 rounded">
+                              {task.urgency}
+                            </span>
+                            {task.category && (
+                              <span className={`text-[10px] font-bold px-2 py-1 rounded ${
+                                task.category === 'Vital' ? 'bg-purple-100 text-purple-700' : 
+                                task.category === 'Essential' ? 'bg-blue-100 text-blue-700' : 
+                                'bg-slate-100 text-slate-700'
+                              }`}>
+                                {task.category}
+                              </span>
+                            )}
+                          </div>
+                          {task.deadline && (
+                            <span className={`text-[10px] font-bold px-2 py-1 rounded flex items-center gap-1 ${
+                              task.deadline.toMillis() - Date.now() < 1000 * 60 * 60 * 6 
+                                ? 'bg-red-50 text-red-600 animate-pulse' 
+                                : 'bg-slate-50 text-slate-500'
+                            }`}>
+                              <Clock className="w-3 h-3" />
+                              {task.deadline.toMillis() < Date.now() 
+                                ? 'EXPIRED' 
+                                : `${Math.floor((task.deadline.toMillis() - Date.now()) / (1000 * 60 * 60))}h left`}
+                            </span>
+                          )}
+                          <span className="text-[10px] font-bold text-primary uppercase bg-primary/5 px-2 py-0.5 rounded mt-1">
                             {10 + (task.priority === 'High' ? 40 : task.priority === 'Medium' ? 20 : 0) + Math.min(60, (task.beneficiaries || 0) * 2) + (task.complexity === 'Complex' ? 50 : task.complexity === 'Standard' ? 20 : 0)} Points
                           </span>
                         </div>
@@ -2039,26 +2177,88 @@ export default function VolunteerDashboard() {
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label>Photo Proof (Required)</Label>
+              <div className="flex justify-between items-center">
+                <Label>Photo Proof (Required)</Label>
+                {!proofImage && !isWebcamActive && (
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    className="h-7 text-[10px] font-bold uppercase tracking-wider text-primary"
+                    onClick={startWebcam}
+                    disabled={isCameraLoading}
+                  >
+                    {isCameraLoading ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Camera className="w-3 h-3 mr-1" />}
+                    Use Webcam
+                  </Button>
+                )}
+                {isWebcamActive && (
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    className="h-7 text-[10px] font-bold uppercase tracking-wider text-red-500"
+                    onClick={stopWebcam}
+                  >
+                    Cancel Camera
+                  </Button>
+                )}
+              </div>
+              
               <div 
-                className={`border-2 border-dashed rounded-xl h-48 flex flex-col items-center justify-center gap-2 transition-colors cursor-pointer overflow-hidden relative ${
-                  proofImage ? 'border-green-500 bg-green-50/10' : 'border-slate-200 hover:border-primary/50 hover:bg-slate-50'
+                className={`border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-2 transition-colors overflow-hidden relative ${
+                  proofImage ? 'border-green-500 bg-green-50/10 min-h-[200px]' : 
+                  isWebcamActive ? 'border-primary bg-slate-950 min-h-[300px]' :
+                  'border-slate-200 hover:border-primary/50 hover:bg-slate-50 h-48 cursor-pointer'
                 }`}
-                onClick={() => document.getElementById('photo-upload')?.click()}
+                onClick={() => !proofImage && !isWebcamActive && document.getElementById('photo-upload')?.click()}
               >
                 {proofImage ? (
-                  <img src={proofImage} alt="Proof" className="w-full h-full object-cover" />
+                  <div className="relative w-full h-full min-h-[200px]">
+                    <img src={proofImage} alt="Proof" className="w-full h-full object-cover" />
+                    <Button 
+                      variant="destructive" 
+                      size="icon" 
+                      className="absolute top-2 right-2 h-8 w-8 rounded-full shadow-lg"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setProofImage(null);
+                      }}
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </div>
+                ) : isWebcamActive ? (
+                  <div className="relative w-full h-full flex flex-col items-center group">
+                    <video 
+                      ref={videoRef} 
+                      autoPlay 
+                      playsInline 
+                      className="w-full h-full bg-black object-cover"
+                    />
+                    <div className="absolute bottom-4 left-0 right-0 flex justify-center">
+                      <Button 
+                        size="icon" 
+                        className="h-14 w-14 rounded-full bg-white hover:bg-slate-100 text-slate-900 border-4 border-primary/20 shadow-xl group-active:scale-95 transition-all"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          capturePhoto();
+                        }}
+                      >
+                        <div className="w-8 h-8 rounded-full border-2 border-slate-900" />
+                      </Button>
+                    </div>
+                  </div>
                 ) : (
                   <>
                     <Upload className="w-8 h-8 text-slate-300" />
-                    <span className="text-sm text-slate-400">Click to upload or take photo</span>
-                    <span className="text-[10px] text-slate-300 uppercase font-bold tracking-widest">JPG/PNG, max 2MB</span>
+                    <span className="text-sm text-slate-400 text-center px-4">Click to upload, drag photo, or tap 'Use Webcam'</span>
+                    <span className="text-[10px] text-slate-300 uppercase font-bold tracking-widest">JPG/PNG/WEBP, Max 2MB</span>
                   </>
                 )}
                 <input 
                   id="photo-upload" 
                   type="file" 
                   accept="image/*" 
+                  capture="environment"
                   className="hidden" 
                   onChange={handleImageUpload} 
                 />
