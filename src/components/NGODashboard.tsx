@@ -65,6 +65,7 @@ interface AnalysisResult {
   priority: 'High' | 'Medium' | 'Low';
   urgency: 'Immediate' | 'Soon' | 'Planned';
   category: 'Vital' | 'Essential' | 'Stabilizing';
+  taskType: 'Health' | 'Food' | 'Logistics' | 'Education' | 'Rescue' | 'Shelter' | 'Environment' | 'Others';
   deadline: string;
   complexity: 'Simple' | 'Standard' | 'Complex';
   beneficiaries: number;
@@ -100,6 +101,7 @@ interface Task {
   priority: 'High' | 'Medium' | 'Low';
   urgency: 'Immediate' | 'Soon' | 'Planned';
   category?: 'Vital' | 'Essential' | 'Stabilizing';
+  taskType: 'Health' | 'Food' | 'Logistics' | 'Education' | 'Rescue' | 'Shelter' | 'Environment' | 'Others';
   deadline?: Timestamp;
   complexity: 'Simple' | 'Standard' | 'Complex';
   beneficiaries: number;
@@ -146,10 +148,11 @@ export default function NGODashboard() {
   const [isReverseGeocoding, setIsReverseGeocoding] = useState(false);
   
   const isTaskAtRisk = (task: Task) => {
-    if (!['pending', 'accepted', 'active'].includes(task.status) || !task.deadline) return false;
+    if (!['pending', 'accepted', 'active'].includes(task.status) || !task.deadline || !task.createdAt) return false;
     const now = Date.now();
-    const created = task.createdAt.toMillis();
-    const deadline = task.deadline.toMillis();
+    // Use toMillis() only if available (handles latency-compensated local snapshots)
+    const created = typeof task.createdAt.toMillis === 'function' ? task.createdAt.toMillis() : now;
+    const deadline = typeof task.deadline.toMillis === 'function' ? task.deadline.toMillis() : now + 86400000;
     const totalTime = deadline - created;
     const elapsed = now - created;
     
@@ -501,14 +504,15 @@ export default function NGODashboard() {
         3. Priority (High, Medium, or Low) - calculated based on time + impact.
         4. Urgency (Immediate, Soon, or Planned) - based on mentioned timing.
         5. Category (Vital, Essential, or Stabilizing).
-        6. Deadline (ISO 8601 string) - Estimate this based on the report. If no time mentioned, default to 24h from now for Vital, 3 days for Essential, 7 days for Stabilizing.
-        7. Complexity (Simple: <1hr, Standard: 1-4hrs, Complex: >4hrs/hard labor).
-        8. Estimated number of Beneficiaries.
-        9. Recommended team size (integer).
-        10. Minimum required members (integer).
-        11. A checklist of required skills and equipment (array of strings).
+        6. Task Type (One of: Health, Food, Logistics, Education, Rescue, Shelter, Environment, Others).
+        7. Deadline (ISO 8601 string) - Estimate this based on the report. If no time mentioned, default to 24h from now for Vital, 3 days for Essential, 7 days for Stabilizing.
+        8. Complexity (Simple: <1hr, Standard: 1-4hrs, Complex: >4hrs/hard labor).
+        9. Estimated number of Beneficiaries.
+        10. Recommended team size (integer).
+        11. Minimum required members (integer).
+        12. A checklist of required skills and equipment (array of strings).
         
-        Format the output as a JSON array of objects with keys: title, description, priority, urgency, category, deadline, complexity, beneficiaries, recommendedTeamSize, minMembers, checklist.
+        Format the output as a JSON array of objects with keys: title, description, priority, urgency, category, taskType, deadline, complexity, beneficiaries, recommendedTeamSize, minMembers, checklist.
         
         Report:
         ${reportText}
@@ -552,6 +556,7 @@ export default function NGODashboard() {
             priority: item.priority,
             urgency: item.urgency,
             category: item.category || 'Essential',
+            taskType: item.taskType || 'Others',
             deadline: item.deadline ? Timestamp.fromDate(new Date(item.deadline)) : Timestamp.fromMillis(Date.now() + 72 * 60 * 60 * 1000),
             complexity: item.complexity || 'Standard',
             beneficiaries: item.beneficiaries || 0,
@@ -763,7 +768,7 @@ export default function NGODashboard() {
                         <CardTitle className="text-lg truncate">{task.title}</CardTitle>
                         <CardDescription className="flex items-center gap-1">
                           <Clock className="w-3 h-3" />
-                          Submitted {task.updatedAt?.toDate().toLocaleDateString()}
+                          Submitted {task.updatedAt ? task.updatedAt.toDate().toLocaleDateString() : "Just now"}
                         </CardDescription>
                       </CardHeader>
                       <CardContent className="pb-4">
@@ -1003,7 +1008,12 @@ export default function NGODashboard() {
                                 </span>
                               </div>
                             </div>
-                            <CardTitle className="text-lg">{result.title}</CardTitle>
+                            <CardTitle className="text-lg flex items-center gap-2">
+                              {result.title}
+                              <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded border italic">
+                                #{result.taskType || 'Others'}
+                              </span>
+                            </CardTitle>
                           </CardHeader>
                           <CardContent>
                             <p className="text-sm text-slate-600 leading-relaxed mb-4">
@@ -1093,7 +1103,13 @@ export default function NGODashboard() {
                               <CardTitle className="text-lg">Report Analysis</CardTitle>
                               <CardDescription className="flex items-center gap-2">
                                 <Calendar className="w-3 h-3" />
-                                {report.createdAt?.toDate().toLocaleDateString()} at {report.createdAt?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                {report.createdAt ? (
+                                  <>
+                                    {report.createdAt.toDate().toLocaleDateString()} at {report.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                  </>
+                                ) : (
+                                  "Just now..."
+                                )}
                               </CardDescription>
                             </div>
                           </div>
@@ -1303,7 +1319,7 @@ export default function NGODashboard() {
                         <CardFooter className="pt-0 flex justify-between items-center">
                           <div className="text-[10px] text-slate-400 flex items-center gap-1">
                             <Calendar className="w-3 h-3" />
-                            {task.createdAt?.toDate().toLocaleDateString()}
+                            {task.createdAt ? task.createdAt.toDate().toLocaleDateString() : "Just now..."}
                           </div>
                           {task.status === 'pending' && (
                             <Button size="sm" onClick={() => handleUpdateTaskStatus(task.id, 'active', true)}>

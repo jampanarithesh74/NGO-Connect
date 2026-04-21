@@ -74,6 +74,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
 import { awardPointsAndBadges } from '@/src/lib/gamification';
@@ -92,6 +99,7 @@ interface Task {
   priority: 'High' | 'Medium' | 'Low';
   urgency: 'Immediate' | 'Soon' | 'Planned';
   category?: 'Vital' | 'Essential' | 'Stabilizing';
+  taskType?: 'Health' | 'Food' | 'Logistics' | 'Education' | 'Rescue' | 'Shelter' | 'Environment' | 'Others';
   deadline?: Timestamp;
   complexity: 'Simple' | 'Standard' | 'Complex';
   beneficiaries: number;
@@ -185,6 +193,7 @@ export default function VolunteerDashboard() {
   const [isJoiningSquad, setIsJoiningSquad] = useState(false);
   const [isTakingResponsibility, setIsTakingResponsibility] = useState(false);
   const [isStartMissionDialogOpen, setIsStartMissionDialogOpen] = useState(false);
+  const [selectedType, setSelectedType] = useState<string>('all');
   
   // Solo Checklist State
   const [isChecklistDialogOpen, setIsChecklistDialogOpen] = useState(false);
@@ -214,6 +223,13 @@ export default function VolunteerDashboard() {
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const streamRef = React.useRef<MediaStream | null>(null);
 
+  useEffect(() => {
+    // Robust camera attachment that ensures video element is ready
+    if (isWebcamActive && videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+    }
+  }, [isWebcamActive]);
+
   const startWebcam = async () => {
     setIsCameraLoading(true);
     try {
@@ -226,13 +242,7 @@ export default function VolunteerDashboard() {
       });
       streamRef.current = stream;
       setIsWebcamActive(true);
-      
-      // We need to wait for the video element to be rendered
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-        }
-      }, 100);
+      // Logic handled by useEffect now
     } catch (err) {
       console.error("Error accessing webcam:", err);
       toast.error("Camera access denied or not available. Please check browser permissions.");
@@ -378,7 +388,17 @@ export default function VolunteerDashboard() {
     personalTasksState.forEach(t => taskMap.set(t.id, t));
     squadTasksState.forEach(t => taskMap.set(t.id, t));
     
-    return Array.from(taskMap.values()).sort((a, b) => {
+    let tasks = Array.from(taskMap.values());
+
+    // Apply manual filter if selected
+    if (selectedType !== 'all') {
+      tasks = tasks.filter(t => {
+        const type = t.taskType || 'Others';
+        return type.toLowerCase() === selectedType.toLowerCase();
+      });
+    }
+
+    return tasks.sort((a, b) => {
       // 1. Extreme Urgency (Closest Deadline First)
       const aDeadline = a.deadline?.toMillis() || Infinity;
       const bDeadline = b.deadline?.toMillis() || Infinity;
@@ -406,7 +426,7 @@ export default function VolunteerDashboard() {
       // 4. Default to Recency
       return (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0);
     });
-  }, [pendingTasksState, personalTasksState, squadTasksState]);
+  }, [pendingTasksState, personalTasksState, squadTasksState, selectedType]);
 
   // Fetch tasks and expansion logic
   useEffect(() => {
@@ -958,29 +978,8 @@ export default function VolunteerDashboard() {
       
       if (jsonMatch) {
         const matchedIds = JSON.parse(jsonMatch[0]);
-  const sortedTasks = useMemo(() => {
-    return [...pendingTasksState].sort((a, b) => {
-      // 1. Extreme Urgency (Closest Deadline First)
-      const aDeadline = a.deadline?.toMillis() || Infinity;
-      const bDeadline = b.deadline?.toMillis() || Infinity;
-      
-      if (Math.abs(aDeadline - bDeadline) > 1000 * 60 * 60) { // If more than 1h difference
-        return aDeadline - bDeadline;
-      }
-      
-      // 2. Impact Category
-      const categoryOrder = { 'Vital': 0, 'Essential': 1, 'Stabilizing': 2 };
-      const aCat = categoryOrder[a.category || 'Essential'];
-      const bCat = categoryOrder[b.category || 'Essential'];
-      if (aCat !== bCat) return aCat - bCat;
-
-      // 3. Status Order (Priority string)
-      const priorityOrder = { 'High': 0, 'Medium': 1, 'Low': 2 };
-      return priorityOrder[a.priority] - priorityOrder[b.priority];
-    });
-  }, [pendingTasksState]);
-
-  const matched = sortedTasks.filter(t => matchedIds.includes(t.id));
+        // Use allTasks which is already properly sorted and doesn't break React hook rules
+        const matched = allTasks.filter(t => matchedIds.includes(t.id));
         setMatchedTasks(matched);
         toast.success(`Found ${matched.length} matched tasks!`);
       }
@@ -1496,12 +1495,54 @@ export default function VolunteerDashboard() {
               exit={{ opacity: 0, x: -20 }}
               className="max-w-5xl mx-auto"
             >
-              <div className="mb-8">
-                <h2 className="text-3xl font-bold text-slate-900">Find Needs</h2>
-                <p className="text-slate-500">Explore all opportunities to help from our NGO partners.</p>
+              <div className="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4">
+                <div>
+                  <h2 className="text-3xl font-bold text-slate-900 leading-tight">Find Community Needs</h2>
+                  <p className="text-slate-500">Pick a mission and start making an impact in your area.</p>
+                </div>
+                
+                <div className="flex flex-col sm:flex-row items-end gap-3">
+                  <div className="w-full sm:w-[200px] space-y-1.5">
+                    <Label className="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Filter Category</Label>
+                    <Select value={selectedType} onValueChange={setSelectedType}>
+                      <SelectTrigger className="bg-white border-slate-200">
+                        <SelectValue placeholder="All Categories" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Needs</SelectItem>
+                        <SelectItem value="Health">⚕️ Health & Medical</SelectItem>
+                        <SelectItem value="Food">🍱 Food Supply</SelectItem>
+                        <SelectItem value="Logistics">🚚 Logistics</SelectItem>
+                        <SelectItem value="Education">📚 Education</SelectItem>
+                        <SelectItem value="Rescue">🛟 Rescue & Relief</SelectItem>
+                        <SelectItem value="Shelter">🏠 Shelter/Housing</SelectItem>
+                        <SelectItem value="Environment">🌱 Environment</SelectItem>
+                        <SelectItem value="Others">🧩 Others</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  
+                  <Button 
+                    onClick={handleMatchTasks} 
+                    disabled={isMatching}
+                    className="w-full sm:w-auto bg-gradient-to-r from-primary to-indigo-600 border-none shadow-md shadow-primary/20 hover:shadow-lg hover:shadow-primary/30 transition-all font-bold px-6"
+                  >
+                    {isMatching ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Matching...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4 mr-2" />
+                        Smart Match
+                      </>
+                    )}
+                  </Button>
+                </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-16">
                 {allTasks.filter(t => t.status === 'pending' && !t.handledByNGO).map((task) => (
                   <Card key={task.id} className="border-l-4" 
                     style={{ 
@@ -1549,7 +1590,14 @@ export default function VolunteerDashboard() {
                           </span>
                         </div>
                       </div>
-                      <CardTitle className="text-lg">{task.title}</CardTitle>
+                      <CardTitle className="text-lg flex items-center gap-2">
+                        {task.title}
+                        {task.taskType && (
+                          <span className="text-[10px] font-medium bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded italic">
+                            #{task.taskType}
+                          </span>
+                        )}
+                      </CardTitle>
                     </CardHeader>
                     <CardContent>
                       <p className="text-sm text-slate-600 line-clamp-3 mb-4">
@@ -1569,7 +1617,7 @@ export default function VolunteerDashboard() {
                     <CardFooter className="pt-0 flex flex-col gap-3">
                       <div className="flex items-center text-[10px] text-slate-400 gap-2">
                         <Calendar className="w-3 h-3" />
-                        {task.createdAt?.toDate().toLocaleDateString()}
+                        {task.createdAt ? task.createdAt.toDate().toLocaleDateString() : "Just now..."}
                       </div>
                       <div className="flex gap-2">
                         <Button 
@@ -1591,16 +1639,7 @@ export default function VolunteerDashboard() {
                 ))}
               </div>
 
-              <div className="sticky bottom-8 flex justify-center">
-                <Button 
-                  size="lg" 
-                  className="shadow-xl px-8 py-6 text-lg rounded-full"
-                  onClick={handleMatchTasks}
-                >
-                  <Sparkles className="w-5 h-5 mr-2" />
-                  Match Tasks for Me
-                </Button>
-              </div>
+              {/* Removed sticky bottom button as it's now in the header */}
             </motion.div>
           )}
 
@@ -1749,7 +1788,7 @@ export default function VolunteerDashboard() {
                               <p className="leading-relaxed">{msg.text}</p>
                             </div>
                             <span className="text-[9px] font-bold text-slate-300 mt-1.5 uppercase tracking-tighter">
-                              {msg.createdAt?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              {msg.createdAt ? msg.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "Just now"}
                             </span>
                           </div>
                         ))}
