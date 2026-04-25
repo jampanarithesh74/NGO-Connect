@@ -134,6 +134,8 @@ export default function NGODashboard() {
   const { user } = useAuth();
   const [activeSection, setActiveSection] = useState<Section>('home');
   const [reportText, setReportText] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [filePreview, setFilePreview] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResults, setAnalysisResults] = useState<AnalysisResult[]>([]);
   const [previousReports, setPreviousReports] = useState<Report[]>([]);
@@ -446,153 +448,290 @@ export default function NGODashboard() {
   };
 
   const handleAnalyze = async () => {
-    if (!reportText.trim()) {
-      toast.error("Please enter some report data to analyze.");
+    if (!reportText.trim() && !selectedFile) {
+      toast.error("Please enter report text or upload a file to analyze.");
       return;
     }
-
-    const locationData = {
-      lat: selectedLocation?.lat,
-      lng: selectedLocation?.lng,
-      area: area.trim(),
-      landmark: landmark.trim(),
-      district: district.trim(),
-      state: state.trim()
-    };
-
-    // Lenient validation: Either text address OR map pin is enough
-    const hasTextAddress = locationData.area && locationData.district && locationData.state;
-    const hasMapPin = locationData.lat !== undefined && locationData.lng !== undefined;
-
-    if (!hasTextAddress && !hasMapPin) {
-      toast.error("Please provide at least a map pin or address details (Area, District, State).");
-      return;
-    }
-
-    // Sanitize location data for Firestore (remove undefined values)
-    const sanitizedLocation: any = {};
-    if (locationData.lat !== undefined) sanitizedLocation.lat = locationData.lat;
-    if (locationData.lng !== undefined) sanitizedLocation.lng = locationData.lng;
-    if (locationData.area) sanitizedLocation.area = locationData.area;
-    if (locationData.landmark) sanitizedLocation.landmark = locationData.landmark;
-    if (locationData.district) sanitizedLocation.district = locationData.district;
-    if (locationData.state) sanitizedLocation.state = locationData.state;
 
     setIsAnalyzing(true);
+    setAnalysisResults([]); // Reset previous results to avoid rendering old data with new logic
+    
     try {
-      const locationContext = `Location Context: Area: ${locationData.area}, Landmark: ${locationData.landmark}, District: ${locationData.district}, State: ${locationData.state}`;
+      let fileData: any = null;
+      if (selectedFile) {
+        const reader = new FileReader();
+        const base64Promise = new Promise<string>((resolve) => {
+          reader.onloadend = () => {
+            const result = reader.result as string;
+            const base64 = result.includes(',') ? result.split(',')[1] : result;
+            resolve(base64);
+          };
+        });
+        reader.readAsDataURL(selectedFile);
+        const base64 = await base64Promise;
+        fileData = {
+          inlineData: {
+            data: base64,
+            mimeType: selectedFile.type
+          }
+        };
+      }
+
       const currentTime = new Date().toISOString();
+      const locationContext = selectedLocation?.lat 
+        ? `Current Map Selection: Lat ${selectedLocation.lat}, Lng ${selectedLocation.lng}. Area: ${area}, District: ${district}, State: ${state}.`
+        : "No map selection provided.";
 
       const prompt = `
-        Analyze the following NGO report and extract key action items or tasks. 
+        Analyze the following NGO report (which may be text, an image/scan of a document, or both) and extract key action items or tasks.
+        
         Current Time Context: ${currentTime}
         ${locationContext}
         
-        CRITICAL TRIAGE RULES:
+        CRITICAL: LOCATION EXTRACTION
+        - Look closely for ANY location details (Area, Landmark, District, State).
+        - If multiple locations are mentioned, focus on the primary one or the one where most tasks are centered.
+        - Populate the 'detectedLocation' object with these findings.
+        
+        TASK EXTRACTION RULES:
         1. "Vital": Life-saving (Medical, Water, Search & Rescue).
         2. "Essential": Basic needs (Food, Shelter).
         3. "Stabilizing": Logistics, Cleaning.
         
-        TEMPORAL TRIAGE:
-        - If task is needed ASAP or within 12h: Urgency = "Immediate", Priority = "High".
-        - If task is needed "next week" or "later": Urgency = "Planned", Priority = "Low" or "Medium" (even if it's Food).
-        - Medical aid is ALWAYS high priority UNLESS specified for a much later date.
+        Urgency/Priority Rules:
+        - Within 12h: Urgency "Immediate", Priority "High".
+        - 12-48h: Urgency "Soon", Priority "Medium".
+        - Later: Urgency "Planned", Priority "Low".
         
-        For each task, provide:
-        1. A concise title.
-        2. A brief description.
-        3. Priority (High, Medium, or Low) - calculated based on time + impact.
-        4. Urgency (Immediate, Soon, or Planned) - based on mentioned timing.
-        5. Category (Vital, Essential, or Stabilizing).
-        6. Task Type (One of: Health, Food, Logistics, Education, Rescue, Shelter, Environment, Others).
-        7. Deadline (ISO 8601 string) - Estimate this based on the report. If no time mentioned, default to 24h from now for Vital, 3 days for Essential, 7 days for Stabilizing.
-        8. Complexity (Simple: <1hr, Standard: 1-4hrs, Complex: >4hrs/hard labor).
-        9. Estimated number of Beneficiaries.
-        10. Recommended team size (integer).
-        11. Minimum required members (integer).
-        12. A checklist of required skills and equipment (array of strings).
+        Return a JSON object in this format:
+        {
+          "tasks": [
+            {
+              "title": "...",
+              "description": "...",
+              "priority": "High" | "Medium" | "Low",
+              "urgency": "Immediate" | "Soon" | "Planned",
+              "category": "Vital" | "Essential" | "Stabilizing",
+              "taskType": "Health" | "Food" | "Logistics" | "Education" | "Rescue" | "Shelter" | "Environment" | "Others",
+              "deadline": "ISO8601 string",
+              "complexity": "Simple" | "Standard" | "Complex",
+              "beneficiaries": number,
+              "recommendedTeamSize": number,
+              "minMembers": number,
+              "checklist": ["..."]
+            }
+          ],
+          "detectedLocation": { 
+            "area": "...", 
+            "landmark": "...", 
+            "district": "...", 
+            "state": "...", 
+            "search_query": "An optimized search string for OpenStreetMap, e.g., 'Chowmahalla Palace, Khilwat, Hyderabad, Telangana'"
+          }
+        }
         
-        Format the output as a JSON array of objects with keys: title, description, priority, urgency, category, taskType, deadline, complexity, beneficiaries, recommendedTeamSize, minMembers, checklist.
+        CRITICAL: If the input (image or text) mentions a specific landmark, building, or address, prioritize it in the "search_query" field. If no specific area is found, leave the fields empty.
         
-        Report:
-        ${reportText}
+        ${reportText ? `Text Report: ${reportText}` : "Data is contained in the attached file."}
       `;
+
+      const parts: any[] = [{ text: prompt }];
+      if (fileData) {
+        parts.push(fileData);
+      }
 
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: prompt,
+        contents: { parts },
+        config: {
+          responseMimeType: "application/json"
+        }
       });
       
       const text = response.text || "";
       
-      // Clean up the response to ensure it's valid JSON
-      const jsonMatch = text.match(/\[.*\]/s);
-      if (jsonMatch) {
-        const parsedResults = JSON.parse(jsonMatch[0]) as AnalysisResult[];
-        setAnalysisResults(parsedResults);
-        
-        // Save Report
-        const reportData: any = {
-          ngoId: user?.uid,
-          content: reportText,
-          analysis: parsedResults,
-          status: 'processed',
-          createdAt: serverTimestamp(),
-          location: sanitizedLocation
-        };
-
-        const reportRef = await addDoc(collection(db, 'reports'), reportData);
-
-        // Save individual tasks using a batch
-        const batch = writeBatch(db);
-        parsedResults.forEach((item) => {
-          const taskRef = doc(collection(db, 'tasks'));
-          const taskData: any = {
-            reportId: reportRef.id,
-            ngoId: user?.uid,
-            ngoName: user?.displayName || user?.email?.split('@')[0],
-            title: item.title,
-            description: item.description,
-            priority: item.priority,
-            urgency: item.urgency,
-            category: item.category || 'Essential',
-            taskType: item.taskType || 'Others',
-            deadline: item.deadline ? Timestamp.fromDate(new Date(item.deadline)) : Timestamp.fromMillis(Date.now() + 72 * 60 * 60 * 1000),
-            complexity: item.complexity || 'Standard',
-            beneficiaries: item.beneficiaries || 0,
-            status: 'pending',
-            memberIds: [],
-            aiDetails: {
-              recommendedTeamSize: item.recommendedTeamSize || 1,
-              minMembers: item.minMembers || 1,
-              checklist: item.checklist || []
-            },
-            currentRadius: 10,
-            timerExpiresAt: Timestamp.fromMillis(Date.now() + 30 * 60 * 1000), // 30 min initial timer
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-            location: sanitizedLocation
-          };
-
-          batch.set(taskRef, taskData);
-        });
-        await batch.commit();
-        
-        toast.success("Analysis complete and tasks generated!");
-        setReportText(''); // Clear input after success
-        setSelectedLocation(null); // Reset location
-        setArea('');
-        setLandmark('');
-        setDistrict('');
-        setState('');
-      } else {
-        throw new Error("Could not parse AI response");
+      // Safety: Extract JSON using robust matching
+      let jsonData: any = null;
+      try {
+        const startIdx = text.indexOf('{');
+        const endIdx = text.lastIndexOf('}');
+        if (startIdx !== -1 && endIdx !== -1) {
+          jsonData = JSON.parse(text.substring(startIdx, endIdx + 1));
+        } else {
+          throw new Error("Invalid response format");
+        }
+      } catch (e) {
+        console.error("JSON parse error:", e, text);
+        throw new Error("Could not understand the AI's response. Please try again.");
       }
+
+      const parsedResults = (jsonData.tasks || []) as AnalysisResult[];
+      const detectedLoc = jsonData.detectedLocation;
+
+      if (parsedResults.length === 0) {
+        toast.info("No clear tasks were identified in this report.");
+        setIsAnalyzing(false);
+        return;
+      }
+
+      setAnalysisResults(parsedResults);
+
+      // 1. Process Extracted Location
+      let finalizedArea = area;
+      let finalizedDistrict = district;
+      let finalizedState = state;
+      let finalizedLandmark = landmark;
+      let autoCoords: { lat: number, lng: number } | null = null;
+
+      if (detectedLoc) {
+        if (detectedLoc.area && !area) { finalizedArea = detectedLoc.area; setArea(detectedLoc.area); }
+        if (detectedLoc.landmark && !landmark) { finalizedLandmark = detectedLoc.landmark; setLandmark(detectedLoc.landmark); }
+        if (detectedLoc.district && !district) { finalizedDistrict = detectedLoc.district; setDistrict(detectedLoc.district); }
+        if (detectedLoc.state && !state) { finalizedState = detectedLoc.state; setState(detectedLoc.state); }
+
+        // Trigger Geocoding if needed
+        const aiSearchQuery = detectedLoc.search_query;
+        const backupSearchQuery = `${detectedLoc.area || ''} ${detectedLoc.landmark || ''} ${detectedLoc.district || ''} ${detectedLoc.state || ''}`.trim();
+        const finalSearchQuery = aiSearchQuery || backupSearchQuery;
+
+        if (finalSearchQuery.length > 3 && !selectedLocation?.lat) {
+          autoCoords = await handleGeocodeWithQuery(finalSearchQuery);
+          if (!autoCoords && aiSearchQuery && backupSearchQuery !== aiSearchQuery) {
+            // Try backup if AI query specifically failed
+            autoCoords = await handleGeocodeWithQuery(backupSearchQuery);
+          }
+
+          if (autoCoords) {
+            // Also update the local state variables for UI feedback
+            if (detectedLoc.area && !area) setArea(detectedLoc.area);
+            if (detectedLoc.landmark && !landmark) setLandmark(detectedLoc.landmark);
+            if (detectedLoc.district && !district) setDistrict(detectedLoc.district);
+            if (detectedLoc.state && !state) setState(detectedLoc.state);
+            
+            // Trigger reverse geocode for even more accuracy in the fields
+            handleReverseGeocode(autoCoords.lat, autoCoords.lng);
+          }
+        }
+      }
+
+      // 2. Prepare Location Object for DB
+      const sanitizedLocation: any = {};
+      const finalLat = autoCoords?.lat || selectedLocation?.lat;
+      const finalLng = autoCoords?.lng || selectedLocation?.lng;
+
+      if (typeof finalLat === 'number') sanitizedLocation.lat = finalLat;
+      if (typeof finalLng === 'number') sanitizedLocation.lng = finalLng;
+      
+      // Use detected loc variables (finalizedX) or fallback to current state
+      if (finalizedArea || area) sanitizedLocation.area = finalizedArea || area;
+      if (finalizedLandmark || landmark) sanitizedLocation.landmark = finalizedLandmark || landmark;
+      if (finalizedDistrict || district) sanitizedLocation.district = finalizedDistrict || district;
+      if (finalizedState || state) sanitizedLocation.state = finalizedState || state;
+
+      // 3. Save Report
+      const reportData: any = {
+        ngoId: user?.uid,
+        content: reportText || (selectedFile ? `File Upload: ${selectedFile.name}` : "Unknown report source"),
+        hasFile: !!selectedFile,
+        analysis: parsedResults,
+        status: 'processed',
+        createdAt: serverTimestamp(),
+        location: sanitizedLocation
+      };
+
+      const reportRef = await addDoc(collection(db, 'reports'), reportData);
+
+      // 4. Save Tasks
+      const batch = writeBatch(db);
+      parsedResults.forEach((item) => {
+        const taskRef = doc(collection(db, 'tasks'));
+        batch.set(taskRef, {
+          reportId: reportRef.id,
+          ngoId: user?.uid,
+          ngoName: user?.displayName || user?.email?.split('@')[0],
+          title: item.title || "Untitled Task",
+          description: item.description || "No description provided.",
+          priority: item.priority || "Medium",
+          urgency: item.urgency || "Soon",
+          category: item.category || 'Essential',
+          taskType: item.taskType || 'Others',
+          deadline: item.deadline ? Timestamp.fromDate(new Date(item.deadline)) : Timestamp.fromMillis(Date.now() + 72 * 60 * 60 * 1000),
+          complexity: item.complexity || 'Standard',
+          beneficiaries: Number(item.beneficiaries) || 0,
+          status: 'pending',
+          aiDetails: {
+            recommendedTeamSize: Number(item.recommendedTeamSize) || 1,
+            minMembers: Number(item.minMembers) || 1,
+            checklist: Array.isArray(item.checklist) ? item.checklist : []
+          },
+          currentRadius: 10,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          location: sanitizedLocation
+        });
+      });
+      await batch.commit();
+      
+      toast.success("Tasks successfully extracted and published!");
+      
+      // Clean up inputs
+      setReportText('');
+      setSelectedFile(null);
+      setFilePreview(null);
+
     } catch (error) {
-      console.error("Analysis error:", error);
-      toast.error("Failed to analyze report. Please try again.");
+      console.error("Analysis workflow error:", error);
+      toast.error(error instanceof Error ? error.message : "An unexpected error occurred during analysis.");
     } finally {
       setIsAnalyzing(false);
+    }
+  };
+
+  const handleGeocodeWithQuery = async (queryStr: string): Promise<{ lat: number, lng: number } | null> => {
+    setIsGeocoding(true);
+    try {
+      // Strategy 1: Direct search
+      const runSearch = async (q: string) => {
+        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`, {
+          headers: { 'Accept-Language': 'en' }
+        });
+        return await response.json();
+      };
+
+      let data = await runSearch(queryStr);
+
+      // Strategy 2: If no results and it looks like a long address, try trimming it
+      if (!data || data.length === 0) {
+        const parts = queryStr.split(',').map(p => p.trim());
+        if (parts.length > 2) {
+          // Remove the first part (often a specific shop or tiny detail) and try again
+          data = await runSearch(parts.slice(1).join(', '));
+        }
+      }
+
+      // Strategy 3: Try just the landmarks and area
+      if (!data || data.length === 0) {
+        const parts = queryStr.split(' ');
+        if (parts.length > 3) {
+          data = await runSearch(parts.slice(0, 3).join(' '));
+        }
+      }
+
+      if (data && data.length > 0) {
+        const result = data[0];
+        const lat = parseFloat(result.lat);
+        const lng = parseFloat(result.lon);
+        setSelectedLocation({ lat, lng });
+        toast.info("AI pinned the location on the map.");
+        return { lat, lng };
+      }
+      
+      return null;
+    } catch (error) {
+       console.error("Auto-geocoding error:", error);
+       return null;
+    } finally {
+      setIsGeocoding(false);
     }
   };
 
@@ -816,20 +955,95 @@ export default function NGODashboard() {
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="report">Report Content</Label>
-                      <textarea
-                        id="report"
-                        className="w-full min-h-[300px] p-4 rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                        placeholder="e.g., We visited the rural health center today. There is a critical shortage of clean water and basic medical supplies. Three volunteers are needed for next week's vaccination drive..."
-                        value={reportText}
-                        onChange={(e) => setReportText(e.target.value)}
-                      />
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="report">Text Report (Optional if uploading file)</Label>
+                        <textarea
+                          id="report"
+                          className="w-full min-h-[150px] p-4 rounded-md border border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                          placeholder="e.g., We visited the rural health center today. There is a critical shortage of clean water and basic medical supplies..."
+                          value={reportText}
+                          onChange={(e) => setReportText(e.target.value)}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Document / Photo Report (OCR Analysis)</Label>
+                        <div 
+                          className={`border-2 border-dashed rounded-xl p-8 transition-all flex flex-col items-center justify-center gap-3 cursor-pointer group ${
+                            filePreview ? 'border-primary/50 bg-primary/5' : 'border-slate-200 hover:border-primary/30 hover:bg-slate-50'
+                          }`}
+                          onClick={() => document.getElementById('report-file')?.click()}
+                          onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-primary'); }}
+                          onDragLeave={(e) => { e.preventDefault(); e.currentTarget.classList.remove('border-primary'); }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.currentTarget.classList.remove('border-primary');
+                            const file = e.dataTransfer.files[0];
+                            if (file && (file.type.startsWith('image/') || file.type === 'application/pdf')) {
+                              setSelectedFile(file);
+                              const reader = new FileReader();
+                              reader.onloadend = () => setFilePreview(reader.result as string);
+                              reader.readAsDataURL(file);
+                            }
+                          }}
+                        >
+                          <input 
+                            type="file" 
+                            id="report-file" 
+                            className="hidden" 
+                            accept="image/*,application/pdf"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                setSelectedFile(file);
+                                const reader = new FileReader();
+                                reader.onloadend = () => setFilePreview(reader.result as string);
+                                reader.readAsDataURL(file);
+                              }
+                            }}
+                          />
+                          {filePreview ? (
+                            <div className="relative w-full aspect-video rounded-lg overflow-hidden border shadow-sm">
+                              {selectedFile?.type.startsWith('image/') ? (
+                                <img src={filePreview} alt="Preview" className="w-full h-full object-contain" />
+                              ) : (
+                                <div className="w-full h-full flex flex-center bg-slate-100 items-center justify-center text-slate-500 font-medium">
+                                  <FileText className="w-8 h-8 mr-2" />
+                                  PDF Document Attached
+                                </div>
+                              )}
+                              <Button 
+                                variant="destructive" 
+                                size="icon" 
+                                className="absolute top-2 right-2 h-8 w-8 rounded-full shadow-lg"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedFile(null);
+                                  setFilePreview(null);
+                                }}
+                              >
+                                <XCircle className="h-5 w-5" />
+                              </Button>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center group-hover:bg-primary/10 transition-colors">
+                                <Upload className="w-6 h-6 text-slate-400 group-hover:text-primary transition-colors" />
+                              </div>
+                              <div className="text-center">
+                                <p className="text-sm font-medium text-slate-900">Click to upload or drag and drop</p>
+                                <p className="text-xs text-slate-500 mt-1">Images or PDF (Max 10MB)</p>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
                     </div>
                     <Button 
-                      className="w-full py-6 text-lg" 
+                      className="w-full py-6 text-lg mt-6 shadow-indigo-100 shadow-lg" 
                       onClick={handleAnalyze}
-                      disabled={isAnalyzing || !reportText.trim()}
+                      disabled={isAnalyzing || (!reportText.trim() && !selectedFile)}
                     >
                       {isAnalyzing ? (
                         <>
@@ -921,6 +1135,8 @@ export default function NGODashboard() {
                       <div className="h-[200px] rounded-xl overflow-hidden border-2 border-slate-200 relative group">
                         <MapComponent 
                           isPicker={true}
+                          center={selectedLocation?.lat && selectedLocation?.lng ? [selectedLocation.lat, selectedLocation.lng] : undefined}
+                          pickerValue={selectedLocation?.lat && selectedLocation?.lng ? [selectedLocation.lat, selectedLocation.lng] : null}
                           onLocationSelect={(lat, lng) => {
                             setSelectedLocation(prev => ({ ...prev, lat, lng }));
                             handleReverseGeocode(lat, lng);
@@ -1109,6 +1325,12 @@ export default function NGODashboard() {
                                   </>
                                 ) : (
                                   "Just now..."
+                                )}
+                                {report.hasFile && (
+                                  <span className="flex items-center gap-1 text-[10px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded border border-blue-100 ml-2">
+                                    <Upload className="w-2 h-2" />
+                                    File Attached
+                                  </span>
                                 )}
                               </CardDescription>
                             </div>

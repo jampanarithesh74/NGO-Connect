@@ -18,8 +18,6 @@ import {
 } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '@/src/lib/firestoreUtils';
 import { GoogleGenAI, Type } from "@google/genai";
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 import { 
   LayoutDashboard, 
   Search, 
@@ -85,6 +83,8 @@ import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
 import { awardPointsAndBadges } from '@/src/lib/gamification';
 import MapComponent from './MapComponent';
+
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 type Section = 'home' | 'find' | 'matched' | 'accepted' | 'progress' | 'contributions' | 'leaderboard' | 'badges' | 'map' | 'profile' | 'squad';
 
@@ -1304,10 +1304,11 @@ export default function VolunteerDashboard() {
                 </Button>
               </div>
 
-              <div className="flex-1 relative">
+              <div className="flex-1 relative min-h-[500px]">
                 <MapComponent 
+                  center={currentLocation ? [currentLocation.lat, currentLocation.lng] : undefined}
                   markers={allTasks
-                    .filter(t => t.status === 'pending' && t.location)
+                    .filter(t => t.status === 'pending' && t.location && typeof t.location.lat === 'number' && typeof t.location.lng === 'number')
                     .map(t => ({
                       id: t.id,
                       position: [t.location!.lat, t.location!.lng],

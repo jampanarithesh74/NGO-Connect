@@ -1,23 +1,20 @@
 import React, { useEffect, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
-import 'leaflet/dist/leaflet.css';
 
-// Fix for default marker icons in Leaflet with React
-// @ts-ignore
-import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
-// @ts-ignore
-import markerIcon from 'leaflet/dist/images/marker-icon.png';
-// @ts-ignore
-import markerShadow from 'leaflet/dist/images/marker-shadow.png';
-
-// @ts-ignore
-delete L.Icon.Default.prototype._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: markerIcon2x,
-  iconUrl: markerIcon,
-  shadowUrl: markerShadow,
+// Fix for default marker icons in Leaflet with React using CDN URLs
+const DefaultIcon = L.icon({
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  tooltipAnchor: [16, -28],
+  shadowSize: [41, 41]
 });
+
+L.Marker.prototype.options.icon = DefaultIcon;
 
 interface MapComponentProps {
   center?: [number, number];
@@ -33,20 +30,32 @@ interface MapComponentProps {
   }>;
   onLocationSelect?: (lat: number, lng: number) => void;
   isPicker?: boolean;
+  pickerValue?: [number, number] | null;
 }
 
-function LocationPicker({ onLocationSelect }: { onLocationSelect: (lat: number, lng: number) => void }) {
-  const [position, setPosition] = useState<L.LatLng | null>(null);
+function LocationPicker({ 
+  onLocationSelect, 
+  initialPosition 
+}: { 
+  onLocationSelect: (lat: number, lng: number) => void,
+  initialPosition?: [number, number] | null
+}) {
+  const [position, setPosition] = useState<L.LatLng | [number, number] | null>(initialPosition || null);
   
+  useEffect(() => {
+    setPosition(initialPosition || null);
+  }, [initialPosition]);
+
   useMapEvents({
     click(e) {
+      const { lat, lng } = e.latlng;
       setPosition(e.latlng);
-      onLocationSelect(e.latlng.lat, e.latlng.lng);
+      onLocationSelect(lat, lng);
     },
   });
 
   return position === null ? null : (
-    <Marker position={position}>
+    <Marker position={position as L.LatLngExpression}>
       <Popup>Selected Location</Popup>
     </Marker>
   );
@@ -54,9 +63,16 @@ function LocationPicker({ onLocationSelect }: { onLocationSelect: (lat: number, 
 
 function ChangeView({ center, zoom }: { center: [number, number]; zoom: number }) {
   const map = useMap();
+  const [lat, lng] = center;
+  
   useEffect(() => {
-    map.setView(center, zoom);
-  }, [center, zoom, map]);
+    if (lat && lng) {
+      map.flyTo([lat, lng], zoom, {
+        animate: true,
+        duration: 1.5
+      });
+    }
+  }, [lat, lng, zoom, map]);
   return null;
 }
 
@@ -65,7 +81,8 @@ const MapComponent: React.FC<MapComponentProps> = ({
   zoom = 5,
   markers = [],
   onLocationSelect,
-  isPicker = false
+  isPicker = false,
+  pickerValue = null
 }) => {
   return (
     <div className="h-full w-full rounded-xl overflow-hidden shadow-inner border border-slate-200">
@@ -117,7 +134,10 @@ const MapComponent: React.FC<MapComponentProps> = ({
         ))}
 
         {isPicker && onLocationSelect && (
-          <LocationPicker onLocationSelect={onLocationSelect} />
+          <LocationPicker 
+            onLocationSelect={onLocationSelect} 
+            initialPosition={pickerValue}
+          />
         )}
       </MapContainer>
     </div>
