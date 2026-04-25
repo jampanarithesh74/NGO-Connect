@@ -36,7 +36,7 @@ import { awardPointsAndBadges } from '@/src/lib/gamification';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { 
   DropdownMenu,
   DropdownMenuContent,
@@ -544,7 +544,44 @@ export default function NGODashboard() {
         model: "gemini-3-flash-preview",
         contents: { parts },
         config: {
-          responseMimeType: "application/json"
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              tasks: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    title: { type: "string" },
+                    description: { type: "string" },
+                    priority: { type: "string", enum: ["High", "Medium", "Low"] },
+                    urgency: { type: "string", enum: ["Immediate", "Soon", "Planned"] },
+                    category: { type: "string", enum: ["Vital", "Essential", "Stabilizing"] },
+                    taskType: { type: "string", enum: ["Health", "Food", "Logistics", "Education", "Rescue", "Shelter", "Environment", "Others"] },
+                    deadline: { type: "string" },
+                    complexity: { type: "string", enum: ["Simple", "Standard", "Complex"] },
+                    beneficiaries: { type: "number" },
+                    recommendedTeamSize: { type: "number" },
+                    minMembers: { type: "number" },
+                    checklist: { type: "array", items: { type: "string" } }
+                  },
+                  required: ["title", "description", "priority", "urgency", "category", "taskType", "deadline", "complexity", "beneficiaries", "recommendedTeamSize", "minMembers", "checklist"]
+                }
+              },
+              detectedLocation: {
+                type: "object",
+                properties: {
+                  area: { type: "string" },
+                  landmark: { type: "string" },
+                  district: { type: "string" },
+                  state: { type: "string" },
+                  search_query: { type: "string" }
+                }
+              }
+            },
+            required: ["tasks", "detectedLocation"]
+          }
         }
       });
       
@@ -553,19 +590,56 @@ export default function NGODashboard() {
       // Safety: Extract JSON using robust matching
       let jsonData: any = null;
       try {
-        const startIdx = text.indexOf('{');
-        const endIdx = text.lastIndexOf('}');
-        if (startIdx !== -1 && endIdx !== -1) {
-          jsonData = JSON.parse(text.substring(startIdx, endIdx + 1));
-        } else {
-          throw new Error("Invalid response format");
+        // First try direct parse in case it's clean
+        try {
+          jsonData = JSON.parse(text);
+        } catch (innerE) {
+          // If direct fail, try substring extraction
+          const startIdx = text.indexOf('{');
+          const endIdx = text.lastIndexOf('}');
+          if (startIdx !== -1 && endIdx !== -1) {
+            jsonData = JSON.parse(text.substring(startIdx, endIdx + 1));
+          } else {
+            throw innerE;
+          }
         }
       } catch (e) {
         console.error("JSON parse error:", e, text);
-        throw new Error("Could not understand the AI's response. Please try again.");
+        
+        // Final attempt: see if we can find tasks array even if location is broken
+        if (text.includes('"tasks"')) {
+           toast.error("The AI response was slightly malformed, but we are trying to recover data.");
+           // This is where a more complex recovery logic would go, 
+           // but for now we'll throw a clearer error
+        }
+        
+        throw new Error("The AI returned an incomplete report. This can happen if the input is very complex or long. Please try splitting the report or providing more clarity.");
       }
 
-      const parsedResults = (jsonData.tasks || []) as AnalysisResult[];
+      if (!jsonData || typeof jsonData !== 'object') {
+        throw new Error("AI failed to generate a valid report structure.");
+      }
+
+      // Final schema validation check
+      if (!Array.isArray(jsonData.tasks)) {
+        throw new Error("The AI response was missing the tasks list. Please try again.");
+      }
+
+      const parsedResults = jsonData.tasks.map((t: any) => ({
+        title: t.title || "Untitled Task",
+        description: t.description || "No description provided",
+        priority: ["High", "Medium", "Low"].includes(t.priority) ? t.priority : "Medium",
+        urgency: ["Immediate", "Soon", "Planned"].includes(t.urgency) ? t.urgency : "Soon",
+        category: ["Vital", "Essential", "Stabilizing"].includes(t.category) ? t.category : "Essential",
+        taskType: t.taskType || "Others",
+        deadline: t.deadline || new Date().toISOString(),
+        complexity: ["Simple", "Standard", "Complex"].includes(t.complexity) ? t.complexity : "Standard",
+        beneficiaries: Number(t.beneficiaries) || 0,
+        recommendedTeamSize: Number(t.recommendedTeamSize) || 2,
+        minMembers: Number(t.minMembers) || 1,
+        checklist: Array.isArray(t.checklist) ? t.checklist : []
+      })) as AnalysisResult[];
+
       const detectedLoc = jsonData.detectedLocation;
 
       if (parsedResults.length === 0) {

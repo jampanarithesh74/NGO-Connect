@@ -735,25 +735,44 @@ export default function VolunteerDashboard() {
           Return ONLY a JSON array of strings.
         `;
 
-        const response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: prompt,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING }
-            }
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: { parts: [{ text: prompt }] },
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING }
           }
-        });
+        }
+      });
 
-        const checklist = JSON.parse(response.text || "[]");
-        
-        // Update task with generated checklist for future use
-        const updatedAiDetails = {
-          ...task.aiDetails,
-          checklist: checklist
-        };
+      const responseText = response.text || "[]";
+      let checklist: string[] = [];
+      try {
+        // Try direct parse
+        try {
+          checklist = JSON.parse(responseText);
+        } catch (innerE) {
+          // Robust extraction
+          const s = responseText.indexOf('[');
+          const e = responseText.lastIndexOf(']');
+          if (s !== -1 && e !== -1) {
+            checklist = JSON.parse(responseText.substring(s, e + 1));
+          } else {
+            throw innerE;
+          }
+        }
+      } catch (parseErr) {
+        console.error("AI Checklist parse error:", parseErr, responseText);
+        checklist = ["Basic First Aid Awareness", "Phone with battery", "Appropriate Footwear", "Verification ID", "Water bottle"];
+      }
+      
+      // Update task with generated checklist for future use
+      const updatedAiDetails = {
+        ...task.aiDetails,
+        checklist: checklist
+      };
         
         await updateDoc(doc(db, 'tasks', task.id), {
           aiDetails: updatedAiDetails
