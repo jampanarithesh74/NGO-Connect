@@ -83,6 +83,7 @@ import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
 import { awardPointsAndBadges } from '@/src/lib/gamification';
 import MapComponent from './MapComponent';
+import { createCalendarEvent } from '@/src/services/googleCalendarService';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -678,6 +679,20 @@ export default function VolunteerDashboard() {
         updatedAt: serverTimestamp()
       });
 
+      // Synchronize to Google Calendar
+      try {
+        await createCalendarEvent({
+          title: task.title,
+          description: task.description,
+          deadline: task.deadline,
+          location: task.location
+        });
+        toast.success("Added task to your Google Calendar!");
+      } catch (calErr) {
+        console.warn("Failed to add to calendar:", calErr);
+        toast.info("Task accepted, but could not sync to Google Calendar. Make sure you are signed in.");
+      }
+
       // Notify nearby volunteers (Simplified: create system notification)
       await addDoc(collection(db, 'notifications'), {
         type: 'squad_recruitment',
@@ -779,6 +794,21 @@ export default function VolunteerDashboard() {
         memberIds: [user!.uid], // Solo volunteer is the only member
         updatedAt: serverTimestamp()
       });
+      
+      // Synchronize to Google Calendar
+      try {
+        await createCalendarEvent({
+          title: checklistTask.title,
+          description: checklistTask.description,
+          deadline: checklistTask.deadline,
+          location: checklistTask.location
+        });
+        toast.success("Added task to your Google Calendar!");
+      } catch (calErr) {
+        console.warn("Failed to add to calendar:", calErr);
+        toast.info("Task accepted, but could not sync to Google Calendar.");
+      }
+
       toast.success("Task accepted! You can start it from your Accepted Tasks section.");
       setIsChecklistDialogOpen(false);
       setActiveSection('accepted');
