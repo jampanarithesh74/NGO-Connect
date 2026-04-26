@@ -85,7 +85,18 @@ import { awardPointsAndBadges, trackTaskAbandonment } from '@/src/lib/gamificati
 import MapComponent from './MapComponent';
 import { createCalendarEvent } from '@/src/services/googleCalendarService';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Lazy initialization for Gemini AI to prevent crash if key is missing
+let aiInstance: GoogleGenAI | null = null;
+const getAI = () => {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) {
+    throw new Error("GEMINI_API_KEY is not defined. Please set it in your environment variables.");
+  }
+  if (!aiInstance) {
+    aiInstance = new GoogleGenAI(key);
+  }
+  return aiInstance;
+};
 
 type Section = 'home' | 'find' | 'matched' | 'accepted' | 'progress' | 'contributions' | 'leaderboard' | 'badges' | 'map' | 'profile' | 'squad';
 
@@ -775,6 +786,7 @@ export default function VolunteerDashboard() {
           Return ONLY a JSON array of strings.
         `;
 
+      const ai = getAI();
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: { parts: [{ text: prompt }] },
@@ -1145,6 +1157,7 @@ export default function VolunteerDashboard() {
     setActiveSection('matched');
     
     try {
+      const ai = getAI();
       const model = ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: `

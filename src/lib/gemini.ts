@@ -1,8 +1,19 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+let aiInstance: GoogleGenAI | null = null;
+const getAI = () => {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) {
+    throw new Error("GEMINI_API_KEY is not defined.");
+  }
+  if (!aiInstance) {
+    aiInstance = new GoogleGenAI(key);
+  }
+  return aiInstance;
+};
 
 export const generateTaskDetails = async (title: string, description: string) => {
+  const ai = getAI();
   const result = await ai.models.generateContent({
     model: "gemini-3-flash-preview",
     contents: `Analyze this NGO task and provide recommended team size, minimum members, and a checklist of required skills and equipment.
