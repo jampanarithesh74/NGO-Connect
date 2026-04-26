@@ -153,17 +153,17 @@ export default function LoginPage() {
 
   if (!role) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-2 md:p-4">
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="max-w-2xl w-full grid grid-cols-1 md:grid-cols-2 gap-6"
+          className="w-full md:max-w-2xl grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6"
         >
           <Card 
-            className="cursor-pointer hover:border-primary transition-all hover:shadow-lg group"
+            className="cursor-pointer hover:border-primary transition-all hover:shadow-lg group shadow-sm border-slate-200"
             onClick={() => setRole('ngo')}
           >
-            <CardHeader className="text-center">
+            <CardHeader className="text-center p-8">
               <div className="mx-auto w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mb-4 group-hover:bg-primary/20 transition-colors">
                 <Building2 className="w-8 h-8 text-primary" />
               </div>
@@ -173,10 +173,10 @@ export default function LoginPage() {
           </Card>
 
           <Card 
-            className="cursor-pointer hover:border-primary transition-all hover:shadow-lg group"
+            className="cursor-pointer hover:border-primary transition-all hover:shadow-lg group shadow-sm border-slate-200"
             onClick={() => setRole('volunteer')}
           >
-            <CardHeader className="text-center">
+            <CardHeader className="text-center p-8">
               <div className="mx-auto w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mb-4 group-hover:bg-primary/20 transition-colors">
                 <Heart className="w-8 h-8 text-primary" />
               </div>
@@ -190,21 +190,22 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-0 md:p-4">
       <motion.div 
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="max-w-md w-full"
+        className="w-full md:max-w-md h-screen md:h-auto flex flex-col justify-center"
       >
-        <Button 
-          variant="ghost" 
-          className="mb-4" 
-          onClick={() => setRole(null)}
-        >
-          ← Back to selection
-        </Button>
+        <div className="p-4 md:p-0 w-full">
+          <Button 
+            variant="ghost" 
+            className="mb-4" 
+            onClick={() => setRole(null)}
+          >
+            ← Back to selection
+          </Button>
 
-        <Card className="shadow-xl border-t-4 border-t-primary">
+          <Card className="shadow-xl border-t-4 border-t-primary h-fit md:h-auto">
           <CardHeader className="space-y-1">
             <div className="flex items-center justify-center mb-2">
               {role === 'ngo' ? <Building2 className="w-6 h-6 mr-2 text-primary" /> : <Heart className="w-6 h-6 mr-2 text-primary" />}
@@ -302,6 +303,7 @@ export default function LoginPage() {
             </p>
           </CardFooter>
         </Card>
+        </div>
       </motion.div>
     </div>
   );

@@ -198,6 +198,7 @@ const PREDEFINED_SKILLS = [
 export default function VolunteerDashboard() {
   const { user, userSkills } = useAuth();
   const [activeSection, setActiveSection] = useState<Section>('home');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [pendingTasksState, setPendingTasksState] = useState<Task[]>([]);
   const [personalTasksState, setPersonalTasksState] = useState<Task[]>([]);
   const [squadTasksState, setSquadTasksState] = useState<Task[]>([]);
@@ -1287,9 +1288,97 @@ export default function VolunteerDashboard() {
   ];
 
   return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden">
-      {/* Sidebar */}
-      <aside className="w-64 bg-white border-r flex flex-col shadow-sm">
+    <div className="flex h-screen bg-slate-50 overflow-hidden relative">
+      {/* Mobile Sidebar Toggle Button */}
+      {!isSidebarOpen && (
+        <div className="md:hidden fixed top-4 left-4 z-50">
+          <Button 
+            variant="outline" 
+            size="icon" 
+            className="w-12 h-12 rounded-full shadow-lg bg-white border-2 border-primary/20 text-primary hover:bg-primary/5 active:scale-95 transition-all"
+            onClick={() => setIsSidebarOpen(true)}
+          >
+            <Heart className="w-6 h-6 fill-primary" />
+          </Button>
+        </div>
+      )}
+
+      {/* Mobile Drawer Backdrop */}
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="md:hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60]"
+              onClick={() => setIsSidebarOpen(false)}
+            />
+            <motion.aside 
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="md:hidden fixed inset-y-0 left-0 w-80 bg-white shadow-2xl z-[70] flex flex-col"
+            >
+              <div className="p-6">
+                <div className="flex items-center justify-between mb-8">
+                  <div className="flex items-center gap-2 text-primary">
+                    <Heart className="w-8 h-8 fill-primary" />
+                    <span className="font-black text-2xl tracking-tighter italic uppercase underline decoration-4 decoration-primary/20">Volunteer</span>
+                  </div>
+                  <Button variant="ghost" size="icon" onClick={() => setIsSidebarOpen(false)} className="rounded-full">
+                    <X className="w-5 h-5" />
+                  </Button>
+                </div>
+                
+                <nav className="space-y-1">
+                  {sidebarItems.filter(i => !i.hidden).map((item) => (
+                    <button
+                      key={item.id}
+                      onClick={() => {
+                        setActiveSection(item.id as Section);
+                        setIsSidebarOpen(false);
+                      }}
+                      className={`w-full flex items-center gap-4 px-4 py-4 rounded-2xl text-sm font-bold transition-all active:scale-[0.98] ${
+                        activeSection === item.id 
+                          ? 'bg-primary text-primary-foreground shadow-lg shadow-primary/25' 
+                          : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      <item.icon className="w-5 h-5" />
+                      {item.label}
+                    </button>
+                  ))}
+                </nav>
+              </div>
+              
+              <div className="mt-auto p-6 border-t border-slate-100 bg-slate-50/50">
+                <div className="flex items-center gap-3 mb-6 p-3 rounded-2xl bg-white border border-slate-100 shadow-sm">
+                  <div className="w-12 h-12 rounded-xl bg-primary shadow-inner flex items-center justify-center font-black text-white text-lg">
+                    {user?.email?.[0].toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-black text-slate-900 truncate tracking-tight">{user?.email}</p>
+                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Field Operative</p>
+                  </div>
+                </div>
+                <Button 
+                  variant="outline" 
+                  className="w-full h-12 rounded-xl justify-start text-red-600 border-red-100 hover:text-red-700 hover:bg-red-50 font-bold uppercase tracking-widest text-[10px]"
+                  onClick={() => signOut(auth)}
+                >
+                  <LogOut className="w-4 h-4 mr-2" />
+                  Abort Mission / Logout
+                </Button>
+              </div>
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Desktop Sidebar (unchanged visually but hidden on mobile) */}
+      <aside className="hidden md:flex w-64 bg-white border-r flex-col shadow-sm">
         <div className="p-6">
           <div className="flex items-center gap-2 text-primary mb-8">
             <Heart className="w-8 h-8 fill-primary" />
@@ -1314,19 +1403,19 @@ export default function VolunteerDashboard() {
           </nav>
         </div>
         
-        <div className="mt-auto p-6 border-t">
+        <div className="mt-auto p-6 border-t font-sans">
           <div className="flex items-center gap-3 mb-4">
             <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center font-bold text-primary">
               {user?.email?.[0].toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-slate-900 truncate">{user?.email}</p>
-              <p className="text-xs text-slate-500">Volunteer</p>
+              <p className="text-sm font-medium text-slate-900 truncate font-sans">{user?.email}</p>
+              <p className="text-xs text-slate-500 font-sans">Volunteer</p>
             </div>
           </div>
           <Button 
             variant="outline" 
-            className="w-full justify-start text-red-600 hover:text-red-700 hover:bg-red-50"
+            className="w-full justify-start text-red-600 hover:text-red-700 hover:bg-red-50 font-sans"
             onClick={() => signOut(auth)}
           >
             <LogOut className="w-4 h-4 mr-2" />
@@ -1336,7 +1425,7 @@ export default function VolunteerDashboard() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto p-8">
+      <main className="flex-1 overflow-y-auto p-0 md:p-8 bg-white md:bg-slate-50">
         <AnimatePresence mode="wait">
           {activeSection === 'home' && (
             <motion.div
@@ -1344,7 +1433,7 @@ export default function VolunteerDashboard() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="max-w-5xl mx-auto space-y-8"
+              className="w-full md:max-w-5xl md:mx-auto p-4 md:p-0 space-y-6 md:space-y-8"
             >
               {activeSquad && (
                 <Card className="bg-gradient-to-br from-indigo-600 to-blue-700 border-none shadow-xl text-white overflow-hidden relative">
@@ -1544,7 +1633,7 @@ export default function VolunteerDashboard() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="max-w-4xl mx-auto"
+              className="w-full md:max-w-4xl md:mx-auto p-4 md:p-0"
             >
               <div className="mb-8">
                 <h2 className="text-3xl font-bold text-slate-900 flex items-center gap-3">
@@ -1643,7 +1732,7 @@ export default function VolunteerDashboard() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="max-w-5xl mx-auto"
+              className="w-full md:max-w-5xl md:mx-auto p-4 md:p-0"
             >
               <div className="mb-8">
                 <h2 className="text-3xl font-bold text-slate-900 flex items-center gap-3">
@@ -1695,7 +1784,7 @@ export default function VolunteerDashboard() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="max-w-5xl mx-auto"
+              className="w-full md:max-w-5xl md:mx-auto p-4 md:p-0"
             >
               <div className="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-4">
                 <div>
@@ -1851,7 +1940,7 @@ export default function VolunteerDashboard() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="max-w-5xl mx-auto"
+              className="w-full md:max-w-5xl md:mx-auto p-4 md:p-0"
             >
               <div className="mb-8">
                 <h2 className="text-3xl font-bold text-slate-900 flex items-center gap-3">
@@ -1937,7 +2026,7 @@ export default function VolunteerDashboard() {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="max-w-6xl mx-auto h-[calc(100vh-200px)] flex flex-col"
+              className="w-full md:max-w-6xl md:mx-auto h-[calc(100vh-64px)] md:h-[calc(100vh-200px)] flex flex-col md:p-0"
             >
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-1 overflow-hidden">
                 {/* Chat Panel */}
@@ -2108,7 +2197,7 @@ export default function VolunteerDashboard() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="max-w-5xl mx-auto"
+              className="w-full md:max-w-5xl md:mx-auto p-4 md:p-0"
             >
               <div className="mb-8">
                 <h2 className="text-3xl font-bold text-slate-900">
@@ -2269,7 +2358,7 @@ export default function VolunteerDashboard() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="max-w-3xl mx-auto"
+              className="w-full md:max-w-3xl md:mx-auto p-4 md:p-0"
             >
               <div className="mb-8">
                 <h2 className="text-3xl font-bold text-slate-900 flex items-center gap-3">

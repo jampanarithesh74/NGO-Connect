@@ -26,7 +26,9 @@ import {
   MapPin,
   Search,
   Loader2,
-  Award
+  Award,
+  Heart,
+  X
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
@@ -91,6 +93,7 @@ interface Report {
   content: string;
   analysis: AnalysisResult[];
   status: 'pending' | 'processed';
+  hasFile?: boolean;
   createdAt: Timestamp;
   location?: {
     lat: number;
@@ -137,6 +140,7 @@ interface Task {
   createdAt: Timestamp;
   updatedAt: Timestamp;
   rejectionReason?: string;
+  completionNotes?: string;
   location?: {
     lat: number;
     lng: number;
@@ -150,6 +154,7 @@ interface Task {
 export default function NGODashboard() {
   const { user } = useAuth();
   const [activeSection, setActiveSection] = useState<Section>('home');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [reportText, setReportText] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [filePreview, setFilePreview] = useState<string | null>(null);
@@ -863,9 +868,115 @@ export default function NGODashboard() {
   ];
 
   return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden">
-      {/* Sidebar */}
-      <aside className="w-64 bg-white border-r flex flex-col shadow-sm">
+    <div className="flex h-screen bg-slate-50 overflow-hidden relative">
+      {/* Mobile Sidebar Toggle Button */}
+      {!isSidebarOpen && (
+        <div className="md:hidden fixed top-4 left-4 z-50">
+          <Button 
+            variant="outline" 
+            size="icon" 
+            className="w-12 h-12 rounded-full shadow-lg bg-white border-2 border-primary/20 text-primary hover:bg-primary/5 active:scale-95 transition-all"
+            onClick={() => setIsSidebarOpen(true)}
+          >
+            <Heart className="w-6 h-6 fill-primary text-red-500" />
+          </Button>
+        </div>
+      )}
+
+      {/* Mobile Drawer Backdrop */}
+      <AnimatePresence>
+        {isSidebarOpen && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="md:hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60]"
+              onClick={() => setIsSidebarOpen(false)}
+            />
+            <motion.aside 
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="md:hidden fixed inset-y-0 left-0 w-80 bg-white shadow-2xl z-[70] flex flex-col"
+            >
+              <div className="p-6">
+                <div className="flex items-center justify-between mb-8">
+                  <div className="flex items-center gap-2 text-primary">
+                    <Heart className="w-8 h-8 fill-primary text-red-500" />
+                    <span className="font-black text-2xl tracking-tighter italic uppercase underline decoration-4 decoration-primary/20">NGO Portal</span>
+                  </div>
+                  <Button variant="ghost" size="icon" onClick={() => setIsSidebarOpen(false)} className="rounded-full">
+                    <X className="w-5 h-5" />
+                  </Button>
+                </div>
+                
+                <nav className="space-y-1">
+                  {sidebarItems.map((item) => {
+                    const Icon = item.icon;
+                    const hasAtRiskTasks = item.id === 'progress' && tasks.some(t => isTaskAtRisk(t));
+                    const notificationCount = item.id === 'verifications' ? tasks.filter(t => t.status === 'completed').length : 0;
+                    
+                    return (
+                      <button
+                        key={item.id}
+                        onClick={() => {
+                          setActiveSection(item.id as Section);
+                          setIsSidebarOpen(false);
+                        }}
+                        className={`w-full flex items-center justify-between px-4 py-4 rounded-2xl text-sm font-bold transition-all active:scale-[0.98] ${
+                          activeSection === item.id 
+                            ? 'bg-primary text-primary-foreground shadow-lg shadow-primary/25' 
+                            : 'text-slate-600 hover:bg-slate-100'
+                        }`}
+                      >
+                        <div className="flex items-center gap-4">
+                          <Icon className="w-5 h-5" />
+                          {item.label}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {notificationCount > 0 && (
+                            <div className="bg-amber-500 rounded-full px-2.5 py-0.5 text-[10px] font-bold text-white flex items-center gap-1 shrink-0">
+                              {notificationCount}
+                            </div>
+                          )}
+                          {hasAtRiskTasks && (
+                            <div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]" />
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </nav>
+              </div>
+              
+              <div className="mt-auto p-6 border-t border-slate-100 bg-slate-50/50">
+                <div className="flex items-center gap-3 mb-6 p-3 rounded-2xl bg-white border border-slate-100 shadow-sm">
+                  <div className="w-12 h-12 rounded-xl bg-slate-200 shadow-inner flex items-center justify-center font-black text-slate-600 text-lg">
+                    {user?.email?.[0].toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-black text-slate-900 truncate tracking-tight">{user?.email}</p>
+                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">NGO Partner</p>
+                  </div>
+                </div>
+                <Button 
+                  variant="outline" 
+                  className="w-full h-12 rounded-xl justify-start text-red-600 border-red-100 hover:text-red-700 hover:bg-red-50 font-bold uppercase tracking-widest text-[10px]"
+                  onClick={() => signOut(auth)}
+                >
+                  <LogOut className="w-4 h-4 mr-2" />
+                  Logout / Terminate Session
+                </Button>
+              </div>
+            </motion.aside>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Desktop Sidebar */}
+      <aside className="hidden md:flex w-64 bg-white border-r flex-col shadow-sm">
         <div className="p-6">
           <div className="flex items-center gap-2 text-primary mb-8">
             <LayoutDashboard className="w-8 h-8" />
@@ -928,7 +1039,7 @@ export default function NGODashboard() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto p-8">
+      <main className="flex-1 overflow-y-auto p-0 md:p-8 bg-white md:bg-slate-50">
         <AnimatePresence mode="wait">
           {activeSection === 'home' && (
             <motion.div
@@ -936,7 +1047,7 @@ export default function NGODashboard() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="max-w-4xl mx-auto text-center mt-20"
+              className="w-full md:max-w-4xl md:mx-auto text-center mt-8 md:mt-20 p-4 md:p-0"
             >
               <h1 className="text-5xl font-extrabold text-slate-900 mb-6">
                 Welcome to your <span className="text-primary">NGO Dashboard</span>
@@ -1000,7 +1111,7 @@ export default function NGODashboard() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="max-w-5xl mx-auto"
+              className="w-full md:max-w-5xl md:mx-auto p-4 md:p-0"
             >
               <div className="mb-8">
                 <h2 className="text-3xl font-bold text-slate-900">Stalled Missions</h2>
@@ -1064,7 +1175,7 @@ export default function NGODashboard() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="max-w-5xl mx-auto"
+              className="w-full md:max-w-5xl md:mx-auto p-4 md:p-0"
             >
               <div className="mb-8">
                 <h2 className="text-3xl font-bold text-slate-900">Verification Center</h2>
@@ -1128,7 +1239,7 @@ export default function NGODashboard() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="max-w-5xl mx-auto"
+              className="w-full md:max-w-5xl md:mx-auto p-4 md:p-0"
             >
               <div className="mb-8">
                 <h2 className="text-3xl font-bold text-slate-900">Upload & Analyze Data</h2>
@@ -1471,7 +1582,7 @@ export default function NGODashboard() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="max-w-5xl mx-auto"
+              className="w-full md:max-w-5xl md:mx-auto p-4 md:p-0"
             >
               <div className="mb-8 flex justify-between items-end">
                 <div>
@@ -1526,8 +1637,7 @@ export default function NGODashboard() {
                           </div>
                           <div className="flex items-center gap-4">
                             <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${
-                              report.status === 'completed' ? 'bg-green-100 text-green-700' : 
-                              report.status === 'active' ? 'bg-blue-100 text-blue-700' : 
+                              report.status === 'processed' ? 'bg-green-100 text-green-700' : 
                               'bg-amber-100 text-amber-700'
                             }`}>
                               {report.status}
@@ -1620,7 +1730,7 @@ export default function NGODashboard() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="max-w-5xl mx-auto"
+              className="w-full md:max-w-5xl md:mx-auto p-4 md:p-0"
             >
               <div className="mb-8">
                 <h2 className="text-3xl font-bold text-slate-900">
