@@ -82,6 +82,7 @@ import {
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
 import { awardPointsAndBadges, trackTaskAbandonment } from '@/src/lib/gamification';
+import { ChatBot } from './ChatBot';
 import MapComponent from './MapComponent';
 import { createCalendarEvent } from '@/src/services/googleCalendarService';
 
@@ -93,7 +94,7 @@ const getAI = () => {
     throw new Error("GEMINI_API_KEY is not defined. Please set it in your environment variables.");
   }
   if (!aiInstance) {
-    aiInstance = new GoogleGenAI(key);
+    aiInstance = new GoogleGenAI({ apiKey: key });
   }
   return aiInstance;
 };
@@ -2763,6 +2764,12 @@ export default function VolunteerDashboard() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      
+      <ChatBot 
+        tasks={allTasks} 
+        userRole="volunteer" 
+        currentTask={allTasks.find(t => t.status === 'in_progress' && (t.volunteerId === user?.uid || (activeSquad && t.squadId === activeSquad.id)))} 
+      />
     </div>
   );
 }

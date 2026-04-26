@@ -7,7 +7,7 @@ const getAI = () => {
     throw new Error("GEMINI_API_KEY is not defined.");
   }
   if (!aiInstance) {
-    aiInstance = new GoogleGenAI(key);
+    aiInstance = new GoogleGenAI({ apiKey: key });
   }
   return aiInstance;
 };

@@ -33,6 +33,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter }
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { awardPointsAndBadges, trackTaskAbandonment } from '@/src/lib/gamification';
+import { ChatBot } from './ChatBot';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
@@ -63,7 +64,7 @@ const getAI = () => {
     throw new Error("GEMINI_API_KEY is not defined. Please set it in your environment variables.");
   }
   if (!aiInstance) {
-    aiInstance = new GoogleGenAI(key);
+    aiInstance = new GoogleGenAI({ apiKey: key });
   }
   return aiInstance;
 };
@@ -1980,6 +1981,7 @@ export default function NGODashboard() {
           </DialogContent>
         </Dialog>
       </main>
+      <ChatBot tasks={tasks} userRole="ngo" currentTask={reviewingTask} />
     </div>
   );
 }
