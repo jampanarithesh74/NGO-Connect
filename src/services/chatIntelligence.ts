@@ -1,3 +1,13 @@
+import { GoogleGenAI } from "@google/genai";
+
+const getAI = () => {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) {
+    throw new Error("GEMINI_API_KEY is not defined.");
+  }
+  return new GoogleGenAI({ apiKey: key });
+};
+
 export interface ChatMessage {
   role: 'user' | 'model';
   text: string;
@@ -12,6 +22,7 @@ export const getChatIntelligence = async (
   }
 ) => {
   try {
+    const ai = getAI();
     const systemInstruction = `
       You are "Mission Control" for KarunaSync. 
       CRITICAL: Use the EXACT format below. Be extremely brief. No preambles. No conversational filler.
@@ -42,26 +53,18 @@ export const getChatIntelligence = async (
       Available Intel: ${context?.tasks?.map(t => t.title).join(', ') || 'N/A'}
     `;
 
-    const serverResponse = await fetch("/api/analyze", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        prompt: messages[messages.length - 1].text,
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: messages.map(m => ({
+        role: m.role,
+        parts: [{ text: m.text }]
+      })),
+      config: {
         systemInstruction,
-        history: messages.slice(0, -1).map(m => ({
-          role: m.role,
-          parts: [{ text: m.text }]
-        }))
-      })
+      }
     });
 
-    if (!serverResponse.ok) {
-      const errorData = await serverResponse.json();
-      throw new Error(errorData.error || "Server failed to process chat intelligence.");
-    }
-
-    const { result: text } = await serverResponse.json();
-    return text;
+    return response.text;
   } catch (error) {
     console.error("Chat Intelligence Error:", error);
     return "I'm having trouble connecting to Mission Control. Please try again in a moment.";

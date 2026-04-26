@@ -788,18 +788,20 @@ export default function VolunteerDashboard() {
           Return ONLY a JSON array of strings.
         `;
 
-      const serverResponse = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt })
+      const ai = getAI();
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: { type: Type.STRING }
+          }
+        }
       });
 
-      if (!serverResponse.ok) {
-        const errorData = await serverResponse.json();
-        throw new Error(errorData.error || "Server failed to generate checklist.");
-      }
-
-      const { result: responseText } = await serverResponse.json();
+      const responseText = response.text;
       let checklist: string[] = [];
       try {
         // Try direct parse
@@ -1168,18 +1170,13 @@ export default function VolunteerDashboard() {
           Only return the array of IDs.
         `;
 
-      const serverResponse = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt })
+      const ai = getAI();
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
       });
 
-      if (!serverResponse.ok) {
-        const errorData = await serverResponse.json();
-        throw new Error(errorData.error || "Server failed to match tasks.");
-      }
-
-      const { result: text } = await serverResponse.json();
+      const text = response.text;
       const jsonMatch = text.match(/\[.*\]/s);
       
       if (jsonMatch) {
