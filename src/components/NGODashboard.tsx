@@ -32,7 +32,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { awardPointsAndBadges } from '@/src/lib/gamification';
+import { awardPointsAndBadges, trackTaskAbandonment } from '@/src/lib/gamification';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
@@ -57,7 +57,7 @@ import MapComponent from './MapComponent';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
-type Section = 'home' | 'upload' | 'previous' | 'progress' | 'completed' | 'verifications';
+type Section = 'home' | 'upload' | 'previous' | 'progress' | 'completed' | 'verifications' | 'stalled';
 
 interface AnalysisResult {
   title: string;
@@ -105,20 +105,25 @@ interface Task {
   deadline?: Timestamp;
   complexity: 'Simple' | 'Standard' | 'Complex';
   beneficiaries: number;
-  status: 'pending' | 'accepted' | 'active' | 'pending_approval' | 'completed' | 'cancelled';
+  status: 'open' | 'accepted' | 'in_progress' | 'completed' | 'verified' | 'expired' | 'cancelled';
   aiDetails: {
     recommendedTeamSize: number;
     minMembers: number;
     checklist: string[];
   };
+  acceptedAt?: Timestamp;
+  mustStartBy?: Timestamp;
+  startedAt?: Timestamp;
+  startProof?: string;
+  completedAt?: Timestamp;
+  completionProof?: string;
+  assignedVolunteerId?: string;
   currentRadius: number;
   timerExpiresAt?: Timestamp;
   squadId?: string;
   handledByNGO?: boolean;
   createdAt: Timestamp;
   updatedAt: Timestamp;
-  proofImageUrl?: string;
-  completionNotes?: string;
   rejectionReason?: string;
   location?: {
     lat: number;
@@ -150,7 +155,7 @@ export default function NGODashboard() {
   const [isReverseGeocoding, setIsReverseGeocoding] = useState(false);
   
   const isTaskAtRisk = (task: Task) => {
-    if (!['pending', 'accepted', 'active'].includes(task.status) || !task.deadline || !task.createdAt) return false;
+    if (!['open', 'accepted', 'in_progress'].includes(task.status) || !task.deadline || !task.createdAt) return false;
     const now = Date.now();
     // Use toMillis() only if available (handles latency-compensated local snapshots)
     const created = typeof task.createdAt.toMillis === 'function' ? task.createdAt.toMillis() : now;
@@ -163,7 +168,10 @@ export default function NGODashboard() {
     const isLateInCycle = totalTime > 0 && (elapsed / totalTime) > 0.75;
     const isSoonValue = deadline - now < 1000 * 60 * 60 * 6; // 6 hours
     
-    return isLateInCycle || isSoonValue;
+    // Also consider it stalled if it was accepted but not started within its 'mustStartBy' time
+    const isStalledAcceptance = task.status === 'accepted' && task.mustStartBy && now > task.mustStartBy.toMillis();
+    
+    return isLateInCycle || isSoonValue || isStalledAcceptance;
   };
   
   // Verification state
@@ -379,7 +387,7 @@ export default function NGODashboard() {
     try {
       // 1. Update task status
       await updateDoc(doc(db, 'tasks', task.id), {
-        status: 'completed',
+        status: 'verified',
         updatedAt: serverTimestamp()
       });
 
@@ -428,7 +436,7 @@ export default function NGODashboard() {
     setIsProcessingApproval(true);
     try {
       await updateDoc(doc(db, 'tasks', task.id), {
-        status: 'active', // Send back to active
+        status: 'in_progress', // Send back to in_progress
         rejectionReason: rejectionReason,
         updatedAt: serverTimestamp()
       });
@@ -447,6 +455,29 @@ export default function NGODashboard() {
     }
   };
 
+  const handleKickVolunteer = async (task: Task) => {
+    if (!confirm("Are you sure you want to release this volunteer? The task will return to the 'Open' pool.")) return;
+    
+    try {
+      await updateDoc(doc(db, 'tasks', task.id), {
+        status: 'open',
+        volunteerId: null,
+        assignedVolunteerId: null,
+        memberIds: [],
+        acceptedAt: null,
+        mustStartBy: null,
+        updatedAt: serverTimestamp()
+      });
+      
+      if (task.assignedVolunteerId) {
+        await trackTaskAbandonment(task.assignedVolunteerId);
+      }
+      
+      toast.success("Volunteer released. Task is now open again.");
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `tasks/${task.id}`);
+    }
+  };
   const handleAnalyze = async () => {
     if (!reportText.trim() && !selectedFile) {
       toast.error("Please enter report text or upload a file to analyze.");
@@ -732,7 +763,7 @@ export default function NGODashboard() {
           deadline: item.deadline ? Timestamp.fromDate(new Date(item.deadline)) : Timestamp.fromMillis(Date.now() + 72 * 60 * 60 * 1000),
           complexity: item.complexity || 'Standard',
           beneficiaries: Number(item.beneficiaries) || 0,
-          status: 'pending',
+          status: 'open',
           aiDetails: {
             recommendedTeamSize: Number(item.recommendedTeamSize) || 1,
             minMembers: Number(item.minMembers) || 1,
@@ -813,6 +844,7 @@ export default function NGODashboard() {
     { id: 'upload', label: 'Upload Data', icon: Upload },
     { id: 'previous', label: 'Previous Uploads', icon: History },
     { id: 'progress', label: 'In Progress Works', icon: Clock },
+    { id: 'stalled', label: 'Stalled Missions', icon: AlertCircle },
     { id: 'completed', label: 'Completed Tasks', icon: CheckCircle2 },
     { id: 'verifications', label: 'Verifications', icon: Award },
   ];
@@ -831,6 +863,7 @@ export default function NGODashboard() {
             {sidebarItems.map((item) => {
               const Icon = item.icon;
               const hasAtRiskTasks = item.id === 'progress' && tasks.some(t => isTaskAtRisk(t));
+              const notificationCount = item.id === 'verifications' ? tasks.filter(t => t.status === 'completed').length : 0;
               
               return (
                 <button
@@ -846,6 +879,11 @@ export default function NGODashboard() {
                     <Icon className="w-5 h-5" />
                     {item.label}
                   </div>
+                  {notificationCount > 0 && (
+                    <div className="bg-amber-500 rounded-full px-2.5 py-0.5 text-[10px] font-bold text-white flex items-center gap-1 shrink-0 animate-bounce">
+                      {notificationCount}
+                    </div>
+                  )}
                   {hasAtRiskTasks && (
                     <div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.6)]" />
                   )}
@@ -918,7 +956,7 @@ export default function NGODashboard() {
                 </Card>
               </div>
 
-              {tasks.filter(t => t.status === 'pending_approval').length > 0 && (
+              {tasks.filter(t => t.status === 'completed').length > 0 && (
                 <div className="mt-12 text-left">
                   <h3 className="text-xl font-bold text-slate-900 mb-4 flex items-center gap-2">
                     <AlertCircle className="w-5 h-5 text-amber-500" />
@@ -927,7 +965,7 @@ export default function NGODashboard() {
                   <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 flex items-center justify-between">
                     <div>
                       <p className="text-amber-800 font-semibold text-lg">
-                        You have {tasks.filter(t => t.status === 'pending_approval').length} tasks awaiting verification.
+                        You have {tasks.filter(t => t.status === 'completed').length} tasks awaiting verification.
                       </p>
                       <p className="text-amber-700/70 text-sm">
                         Review volunteer proof to award points and finalize impact.
@@ -940,6 +978,70 @@ export default function NGODashboard() {
                   </div>
                 </div>
               )}
+            </motion.div>
+          )}
+
+          {activeSection === 'stalled' && (
+            <motion.div
+              key="stalled"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="max-w-5xl mx-auto"
+            >
+              <div className="mb-8">
+                <h2 className="text-3xl font-bold text-slate-900">Stalled Missions</h2>
+                <p className="text-slate-500">Missions accepted by volunteers but not yet started. Intervene if necessary.</p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {tasks.filter(t => t.status === 'accepted').length === 0 ? (
+                  <div className="col-span-full h-80 flex flex-col items-center justify-center bg-white rounded-3xl border-2 border-dashed border-slate-100 p-8 text-center">
+                    <CheckCircle2 className="w-16 h-16 text-slate-200 mb-4" />
+                    <p className="text-slate-400 font-medium italic">No stalled missions detected.</p>
+                  </div>
+                ) : (
+                  tasks.filter(t => t.status === 'accepted').map((task) => (
+                    <Card key={task.id} className="border-l-4 border-l-amber-500">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-lg truncate">{task.title}</CardTitle>
+                        <CardDescription className="flex flex-col gap-1.5 mt-1">
+                           <div className="flex items-center gap-1.5 text-amber-600 font-bold">
+                             <Clock className="w-3.5 h-3.5" />
+                             Started By: {task.mustStartBy ? new Date(task.mustStartBy.toMillis()).toLocaleTimeString() : 'N/A'}
+                           </div>
+                           <div className="text-[10px] text-slate-400 uppercase tracking-tighter">
+                             Accepted At: {task.acceptedAt ? task.acceptedAt.toDate().toLocaleString() : 'N/A'}
+                           </div>
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="p-3 bg-slate-50 rounded-lg space-y-2">
+                          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Assigned Volunteer</p>
+                          <div className="flex items-center gap-2">
+                            <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-xs">
+                              {task.assignedVolunteerId ? 'V' : 'S'}
+                            </div>
+                            <span className="text-sm font-medium text-slate-700 truncate">
+                              {task.assignedVolunteerId || 'Squad Lead Access'}
+                            </span>
+                          </div>
+                        </div>
+                      </CardContent>
+                      <CardFooter className="pt-0 border-t bg-slate-50/30 p-4">
+                        <Button 
+                          variant="destructive" 
+                          className="w-full text-xs font-bold uppercase tracking-widest"
+                          onClick={() => handleKickVolunteer(task)}
+                        >
+                          <XCircle className="w-4 h-4 mr-2" />
+                          Release Task
+                        </Button>
+                      </CardFooter>
+                    </Card>
+                  ))
+                )}
+              </div>
             </motion.div>
           )}
 
@@ -957,19 +1059,19 @@ export default function NGODashboard() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {tasks.filter(t => t.status === 'pending_approval').length === 0 ? (
+                {tasks.filter(t => t.status === 'completed').length === 0 ? (
                   <div className="col-span-full py-20 text-center text-slate-400 bg-white rounded-2xl border-2 border-dashed">
                     <Award className="w-12 h-12 mx-auto mb-4 opacity-20" />
                     <p className="text-lg font-medium">All caught up!</p>
                     <p className="text-sm">New submissions will appear here for your review.</p>
                   </div>
                 ) : (
-                  tasks.filter(t => t.status === 'pending_approval').map((task) => (
+                  tasks.filter(t => t.status === 'completed').map((task) => (
                     <Card key={task.id} className="overflow-hidden border-2 border-amber-100 hover:border-amber-200 transition-all shadow-sm hover:shadow-md">
-                      {task.proofImageUrl && (
+                      {task.completionProof && (
                         <div className="h-40 overflow-hidden relative group">
                           <img 
-                            src={task.proofImageUrl} 
+                            src={task.completionProof} 
                             alt="Proof" 
                             className="w-full h-full object-cover transition-transform group-hover:scale-105"
                             referrerPolicy="no-referrer"
@@ -1519,13 +1621,13 @@ export default function NGODashboard() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {tasks.filter(t => (activeSection === 'progress' ? ['pending', 'accepted', 'active'].includes(t.status) : t.status === 'completed')).length === 0 ? (
+                {tasks.filter(t => (activeSection === 'progress' ? ['open', 'accepted', 'in_progress'].includes(t.status) : t.status === 'verified')).length === 0 ? (
                   <div className="col-span-full py-20 text-center text-slate-400">
                     <p>No tasks found in this section.</p>
                   </div>
                 ) : (
                   tasks
-                    .filter(t => (activeSection === 'progress' ? ['pending', 'accepted', 'active'].includes(t.status) : t.status === 'completed'))
+                    .filter(t => (activeSection === 'progress' ? ['open', 'accepted', 'in_progress'].includes(t.status) : t.status === 'verified'))
                     .map((task) => {
                       const atRisk = isTaskAtRisk(task);
                       return (
@@ -1563,13 +1665,19 @@ export default function NGODashboard() {
                                   <Edit2 className="mr-2 h-4 w-4" />
                                   Edit Details
                                 </DropdownMenuItem>
-                                {task.status === 'active' && (
-                                  <DropdownMenuItem onClick={() => handleUpdateTaskStatus(task.id, 'completed')}>
-                                    <CheckCircle2 className="mr-2 h-4 w-4 text-green-600" />
-                                    Mark Completed
-                                  </DropdownMenuItem>
+                                {task.status === 'in_progress' && (
+                                  <>
+                                    <DropdownMenuItem onClick={() => handleUpdateTaskStatus(task.id, 'verified')}>
+                                      <CheckCircle2 className="mr-2 h-4 w-4 text-green-600" />
+                                      Mark Completed
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => handleKickVolunteer(task)} className="text-red-600">
+                                      <XCircle className="mr-2 h-4 w-4" />
+                                      Release Volunteer
+                                    </DropdownMenuItem>
+                                  </>
                                 )}
-                                {task.status === 'pending' && (
+                                {task.status === 'open' && (
                                   <DropdownMenuItem onClick={() => handleUpdateTaskStatus(task.id, 'cancelled')} className="text-red-600">
                                     <XCircle className="mr-2 h-4 w-4" />
                                     Cancel Task
@@ -1617,14 +1725,14 @@ export default function NGODashboard() {
                             <Calendar className="w-3 h-3" />
                             {task.createdAt ? task.createdAt.toDate().toLocaleDateString() : "Just now..."}
                           </div>
-                          {task.status === 'pending' && (
-                            <Button size="sm" onClick={() => handleUpdateTaskStatus(task.id, 'active', true)}>
+                          {task.status === 'open' && (
+                            <Button size="sm" onClick={() => handleUpdateTaskStatus(task.id, 'in_progress', true)}>
                               <Play className="w-3 h-3 mr-1" />
                               Self-Assign
                             </Button>
                           )}
-                          {task.status === 'active' && task.handledByNGO && (
-                            <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700" onClick={() => handleUpdateTaskStatus(task.id, 'completed', true)}>
+                          {task.status === 'in_progress' && task.handledByNGO && (
+                            <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700" onClick={() => handleUpdateTaskStatus(task.id, 'verified', true)}>
                               <CheckCircle2 className="w-3 h-3 mr-1" />
                               Finish Now
                             </Button>
@@ -1716,24 +1824,42 @@ export default function NGODashboard() {
               <div className="space-y-6 py-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="space-y-4">
-                    <div>
-                      <Label className="text-xs text-slate-400 uppercase font-bold tracking-wider">Proof Image</Label>
-                      <div className="mt-2 rounded-xl overflow-hidden border-2 border-slate-100 shadow-inner bg-slate-50 aspect-video flex items-center justify-center">
-                        {reviewingTask.proofImageUrl ? (
-                          <img 
-                            src={reviewingTask.proofImageUrl} 
-                            alt="Completion Proof" 
-                            className="w-full h-full object-cover" 
-                          />
-                        ) : (
-                          <div className="text-slate-400">No image provided</div>
-                        )}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">1. Check-in Proof</Label>
+                        <div className="mt-1 rounded-lg overflow-hidden border-2 border-slate-100 shadow-inner bg-slate-50 aspect-square flex items-center justify-center">
+                          {reviewingTask.startProof ? (
+                            <img 
+                              src={reviewingTask.startProof} 
+                              alt="Check-in Proof" 
+                              className="w-full h-full object-cover" 
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <div className="text-[10px] text-slate-400">No check-in photo</div>
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <Label className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">2. Completion Proof</Label>
+                        <div className="mt-1 rounded-lg overflow-hidden border-2 border-primary/20 shadow-inner bg-slate-50 aspect-square flex items-center justify-center">
+                          {reviewingTask.completionProof ? (
+                            <img 
+                              src={reviewingTask.completionProof} 
+                              alt="Completion Proof" 
+                              className="w-full h-full object-cover" 
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <div className="text-[10px] text-slate-400">No completion photo</div>
+                          )}
+                        </div>
                       </div>
                     </div>
                     
                     <div>
-                      <Label className="text-xs text-slate-400 uppercase font-bold tracking-wider">Volunteer Notes</Label>
-                      <div className="mt-2 p-4 rounded-xl bg-slate-50 border border-slate-100 text-sm italic text-slate-700 min-h-[100px]">
+                      <Label className="text-xs text-slate-400 uppercase font-bold tracking-wider">Volunteer Completion Notes</Label>
+                      <div className="mt-2 p-4 rounded-xl bg-slate-50 border border-slate-100 text-sm italic text-slate-700 min-h-[80px]">
                         "{reviewingTask.completionNotes || "No notes provided by volunteer."}"
                       </div>
                     </div>

@@ -81,7 +81,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
-import { awardPointsAndBadges } from '@/src/lib/gamification';
+import { awardPointsAndBadges, trackTaskAbandonment } from '@/src/lib/gamification';
 import MapComponent from './MapComponent';
 import { createCalendarEvent } from '@/src/services/googleCalendarService';
 
@@ -94,7 +94,8 @@ interface Task {
   reportId: string;
   ngoId: string;
   ngoName?: string;
-  volunteerId?: string;
+  volunteerId?: string; // used for compatibility
+  assignedVolunteerId?: string; 
   title: string;
   description: string;
   priority: 'High' | 'Medium' | 'Low';
@@ -104,20 +105,24 @@ interface Task {
   deadline?: Timestamp;
   complexity: 'Simple' | 'Standard' | 'Complex';
   beneficiaries: number;
-  status: 'pending' | 'accepted' | 'active' | 'pending_approval' | 'completed' | 'cancelled';
+  status: 'open' | 'accepted' | 'in_progress' | 'completed' | 'verified' | 'expired' | 'cancelled';
   aiDetails: {
     recommendedTeamSize: number;
     minMembers: number;
     checklist: string[];
   };
+  acceptedAt?: Timestamp;
+  mustStartBy?: Timestamp;
+  startedAt?: Timestamp;
+  startProof?: string;
+  completedAt?: Timestamp;
+  completionProof?: string;
+  rejectionReason?: string;
   currentRadius: number;
   timerExpiresAt?: Timestamp;
   squadId?: string;
   handledByNGO?: boolean;
   createdAt: Timestamp;
-  proofImageUrl?: string;
-  completionNotes?: string;
-  rejectionReason?: string;
   location?: {
     lat: number;
     lng: number;
@@ -127,6 +132,12 @@ interface Task {
     state: string;
   };
 }
+
+const START_TIMEOUTS = {
+  High: 30 * 60 * 1000,   // 30 mins
+  Medium: 60 * 60 * 1000, // 1 hr
+  Low: 120 * 60 * 1000    // 2 hrs
+};
 
 interface Squad {
   id: string;
@@ -200,6 +211,31 @@ export default function VolunteerDashboard() {
   const [isChecklistDialogOpen, setIsChecklistDialogOpen] = useState(false);
   const [checklistTask, setChecklistTask] = useState<Task | null>(null);
   const [confirmedItems, setConfirmedItems] = useState<string[]>([]);
+
+  const [isStartCheckingIn, setIsStartCheckingIn] = useState(false);
+  const [startingTask, setStartingTask] = useState<Task | null>(null);
+  const [isStartProofDialogOpen, setIsStartProofDialogOpen] = useState(false);
+  const [startProofImage, setStartProofImage] = useState<string | null>(null);
+
+  const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const R = 6371e3; // metres
+    const φ1 = lat1 * Math.PI / 180;
+    const φ2 = lat2 * Math.PI / 180;
+    const Δφ = (lat2 - lat1) * Math.PI / 180;
+    const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+    const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+            Math.cos(φ1) * Math.cos(φ2) *
+            Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+    return R * c; // in metres
+  };
+
+  const calculateMustStartBy = (priority: Task['priority']) => {
+    const timeout = START_TIMEOUTS[priority] || START_TIMEOUTS.Medium;
+    return new Date(Date.now() + timeout);
+  };
 
   const handleUpdateTaskStatus = async (taskId: string, newStatus: Task['status']) => {
     try {
@@ -433,21 +469,21 @@ export default function VolunteerDashboard() {
   useEffect(() => {
     if (!user?.uid) return;
 
-    // 1. Fetch pending tasks (available for everyone to see)
-    const qPending = query(
+    // 1. Fetch open tasks (available for everyone to see)
+    const qOpen = query(
       collection(db, 'tasks'), 
-      where('status', '==', 'pending'),
+      where('status', '==', 'open'),
       orderBy('createdAt', 'desc')
     );
 
-    const unsubscribePending = onSnapshot(qPending, (snapshot) => {
+    const unsubscribeOpen = onSnapshot(qOpen, (snapshot) => {
       const newTasks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Task[];
       setPendingTasksState(newTasks);
 
-      // Expansion Logic for pending tasks
+      // Expansion Logic for open tasks
       const now = Date.now();
       newTasks.forEach(async (task) => {
-        if (task.status === 'pending' && task.timerExpiresAt) {
+        if (task.status === 'open' && task.timerExpiresAt) {
           const expiresAt = task.timerExpiresAt.toMillis();
           if (now > expiresAt && task.currentRadius < 30) {
             const nextRadius = (task.currentRadius || 10) + 10;
@@ -486,7 +522,7 @@ export default function VolunteerDashboard() {
     });
 
     return () => {
-      unsubscribePending();
+      unsubscribeOpen();
       unsubscribePersonal();
     };
   }, [user?.uid]);
@@ -662,6 +698,8 @@ export default function VolunteerDashboard() {
     }
 
     try {
+      const mustStartBy = calculateMustStartBy(task.priority);
+
       const squadRef = await addDoc(collection(db, 'squads'), {
         taskId: task.id,
         leadId: user!.uid,
@@ -675,6 +713,8 @@ export default function VolunteerDashboard() {
       await updateDoc(doc(db, 'tasks', task.id), {
         squadId: squadRef.id,
         status: 'accepted',
+        acceptedAt: serverTimestamp(),
+        mustStartBy: Timestamp.fromDate(mustStartBy),
         memberIds: [user!.uid], // Lead is the first member
         updatedAt: serverTimestamp()
       });
@@ -806,10 +846,15 @@ export default function VolunteerDashboard() {
       return;
     }
 
+    const mustStartBy = calculateMustStartBy(checklistTask.priority);
+
     try {
       await updateDoc(doc(db, 'tasks', checklistTask.id), {
         status: 'accepted',
+        acceptedAt: serverTimestamp(),
+        mustStartBy: Timestamp.fromDate(mustStartBy),
         volunteerId: user!.uid,
+        assignedVolunteerId: user!.uid,
         memberIds: [user!.uid], // Solo volunteer is the only member
         updatedAt: serverTimestamp()
       });
@@ -844,12 +889,124 @@ export default function VolunteerDashboard() {
         updatedAt: serverTimestamp()
       });
       await updateDoc(doc(db, 'tasks', activeSquad.taskId), {
-        status: 'active',
+        status: 'in_progress',
         updatedAt: serverTimestamp()
       });
       toast.success("Task execution started!");
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `squads/${activeSquad.id}`);
+    }
+  };
+
+  // Monitor tasks for nudges and expiration
+  useEffect(() => {
+    if (!user) return;
+    const interval = setInterval(() => {
+      const now = Date.now();
+      personalTasksState.forEach(async (task) => {
+        if (task.status === 'accepted' && task.mustStartBy) {
+          const mustStart = task.mustStartBy.toMillis();
+          const accepted = task.acceptedAt?.toMillis() || task.createdAt.toMillis();
+          const totalAllowed = mustStart - accepted;
+          const remaining = mustStart - now;
+          const ratio = (now - accepted) / totalAllowed;
+
+          // Auto-expire
+          if (now > mustStart) {
+            toast.error(`Task Expired: ${task.title}`, {
+              description: "You didn't start the task in time. It has been released for others."
+            });
+            await updateDoc(doc(db, 'tasks', task.id), {
+              status: 'open',
+              volunteerId: null,
+              assignedVolunteerId: null,
+              memberIds: [],
+              acceptedAt: null,
+              mustStartBy: null,
+              updatedAt: serverTimestamp()
+            });
+            
+            // Log abandonment for reliability score
+            await trackTaskAbandonment(user.uid);
+          } 
+          // Nudge at 75%
+          else if (ratio > 0.75 && ratio < 0.8) {
+            toast.warning("Action Required!", {
+              description: `You haven't started '${task.title}' yet. It will be released soon!`,
+              duration: 5000
+            });
+          }
+        }
+      });
+    }, 30000); // Check every 30 seconds
+
+    return () => clearInterval(interval);
+  }, [personalTasksState, user]);
+
+  const handleBeginMission = async (task: Task) => {
+    if (!currentLocation) {
+      toast.error("Location access is required to verify your presence.");
+      return;
+    }
+
+    const distance = getDistance(
+      currentLocation.lat, 
+      currentLocation.lng, 
+      task.location!.lat, 
+      task.location!.lng
+    );
+
+    if (distance > 300) { // 300 meters
+      toast.error("Too far!", {
+        description: `You are ${(distance / 1000).toFixed(2)}km away. Please get within 300m of the task site.`
+      });
+      return;
+    }
+
+    // For squads, we first show the "Commander Responsibility" dialog
+    if (task.squadId && activeSquad && activeSquad.leadId === user?.uid) {
+      setStartingTask(task);
+      setIsStartMissionDialogOpen(true);
+    } else {
+      // For solo, go straight to photo proof
+      setStartingTask(task);
+      setIsStartProofDialogOpen(true);
+      await startWebcam();
+    }
+  };
+
+  const confirmBeginMission = async () => {
+    if (!startingTask || !startProofImage) return;
+
+    setIsStartCheckingIn(true);
+    try {
+      const taskUpdate: any = {
+        status: 'in_progress',
+        startedAt: serverTimestamp(),
+        startProof: startProofImage,
+        updatedAt: serverTimestamp()
+      };
+
+      await updateDoc(doc(db, 'tasks', startingTask.id), {
+        ...taskUpdate
+      });
+
+      if (startingTask.squadId) {
+        await updateDoc(doc(db, 'squads', startingTask.squadId), {
+          status: 'executing',
+          updatedAt: serverTimestamp()
+        });
+      }
+
+      toast.success("Mission started! Good luck.");
+      setIsStartProofDialogOpen(false);
+      setStartProofImage(null);
+      stopWebcam();
+      setActiveSection('progress');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `tasks/${startingTask.id}`);
+    } finally {
+      setIsStartCheckingIn(false);
     }
   };
 
@@ -876,31 +1033,11 @@ export default function VolunteerDashboard() {
   };
 
   const handleStartMissionConfirm = async () => {
-    if (!activeSquad) return;
+    if (!activeSquad || !startingTask) return;
     
-    setIsSavingSkills(true); // Using this as a general loading state for simplicity
-    try {
-      // Find the associated task
-      const task = allTasks.find(t => t.squadId === activeSquad.id);
-      if (!task) throw new Error("Task not found");
-
-      await updateDoc(doc(db, 'squads', activeSquad.id), {
-        status: 'executing',
-        updatedAt: serverTimestamp()
-      });
-
-      await updateDoc(doc(db, 'tasks', task.id), {
-        status: 'active',
-        updatedAt: serverTimestamp()
-      });
-
-      toast.success("Mission started! Coordinates unlocked for the squad.");
-      setIsStartMissionDialogOpen(false);
-    } catch (error) {
-       handleFirestoreError(error, OperationType.UPDATE, `squads/${activeSquad.id}`);
-    } finally {
-      setIsSavingSkills(false);
-    }
+    setIsStartProofDialogOpen(true);
+    setIsStartMissionDialogOpen(false);
+    await startWebcam();
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -956,9 +1093,10 @@ export default function VolunteerDashboard() {
     setIsUploading(true);
     try {
       await updateDoc(doc(db, 'tasks', submittingTask.id), {
-        status: 'pending_approval',
-        proofImageUrl: proofImage,
+        status: 'completed',
+        completionProof: proofImage,
         completionNotes: completionNotes,
+        completedAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
       
@@ -1357,7 +1495,7 @@ export default function VolunteerDashboard() {
                 <MapComponent 
                   center={currentLocation ? [currentLocation.lat, currentLocation.lng] : undefined}
                   markers={allTasks
-                    .filter(t => t.status === 'pending' && t.location && typeof t.location.lat === 'number' && typeof t.location.lng === 'number')
+                    .filter(t => t.status === 'open' && t.location && typeof t.location.lat === 'number' && typeof t.location.lng === 'number')
                     .map(t => ({
                       id: t.id,
                       position: [t.location!.lat, t.location!.lng],
@@ -1593,7 +1731,7 @@ export default function VolunteerDashboard() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-16">
-                {allTasks.filter(t => t.status === 'pending' && !t.handledByNGO).map((task) => (
+                {allTasks.filter(t => t.status === 'open' && !t.handledByNGO).map((task) => (
                   <Card key={task.id} className="border-l-4" 
                     style={{ 
                       borderLeftColor: task.priority === 'High' ? '#ef4444' : task.priority === 'Medium' ? '#f59e0b' : '#10b981' 
@@ -1716,12 +1854,12 @@ export default function VolunteerDashboard() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {matchedTasks.filter(t => t.status === 'pending').length === 0 ? (
+                  {matchedTasks.filter(t => t.status === 'open').length === 0 ? (
                     <div className="col-span-full py-20 text-center text-slate-400">
                       <p>No direct matches found. Try adding more skills to your profile!</p>
                     </div>
                   ) : (
-                    matchedTasks.filter(t => t.status === 'pending').map((task) => (
+                    matchedTasks.filter(t => t.status === 'open').map((task) => (
                       <Card key={task.id} className="border-l-4 border-amber-400 bg-amber-50/30">
                         <CardHeader className="pb-2">
                           <div className="flex justify-between items-start mb-2">
@@ -1805,7 +1943,10 @@ export default function VolunteerDashboard() {
                         <Button 
                           size="default" 
                           className="bg-emerald-600 hover:bg-emerald-700 shadow-lg shadow-emerald-200"
-                          onClick={() => setIsStartMissionDialogOpen(true)}
+                          onClick={() => {
+                            const task = allTasks.find(t => t.squadId === activeSquad.id);
+                            if (task) handleBeginMission(task);
+                          }}
                         >
                           <Play className="w-4 h-4 mr-2" />
                           Start Mission
@@ -1970,8 +2111,8 @@ export default function VolunteerDashboard() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {allTasks.filter(t => (t.volunteerId === user?.uid || (activeSquad && t.squadId === activeSquad.id)) && (
                   activeSection === 'accepted' ? t.status === 'accepted' : 
-                  activeSection === 'progress' ? t.status === 'active' : 
-                  (t.status === 'completed' || t.status === 'pending_approval')
+                  activeSection === 'progress' ? t.status === 'in_progress' : 
+                  (t.status === 'completed' || t.status === 'verified')
                 )).length === 0 ? (
                   <div className="col-span-full py-20 text-center text-slate-400">
                     <p>No tasks found in this section.</p>
@@ -1980,8 +2121,8 @@ export default function VolunteerDashboard() {
                   allTasks
                     .filter(t => (t.volunteerId === user?.uid || (activeSquad && t.squadId === activeSquad.id)) && (
                       activeSection === 'accepted' ? t.status === 'accepted' : 
-                      activeSection === 'progress' ? t.status === 'active' : 
-                      (t.status === 'completed' || t.status === 'pending_approval')
+                      activeSection === 'progress' ? t.status === 'in_progress' : 
+                      (t.status === 'completed' || t.status === 'verified')
                     ))
                     .map((task) => (
                       <Card key={task.id} className="border-l-4" 
@@ -2023,7 +2164,7 @@ export default function VolunteerDashboard() {
                             Effort: {task.complexity || 'Standard'}
                           </div>
                         </div>
-                        {task.rejectionReason && task.status === 'active' && (
+                        {task.rejectionReason && task.status === 'in_progress' && (
                             <div className="mt-3 p-3 bg-red-50 border border-red-100 rounded-lg flex gap-2 items-start shrink-0">
                               <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
                               <div className="space-y-1">
@@ -2035,25 +2176,40 @@ export default function VolunteerDashboard() {
                         </CardContent>
                         <CardFooter className="flex flex-col gap-2">
                           {task.status === 'accepted' && (
-                            <div className="w-full flex gap-2">
-                              {task.squadId ? (
-                                <div className="flex-1 text-center py-2 bg-amber-50 text-amber-700 font-bold rounded text-xs">
-                                  Recruiting Squad...
-                                </div>
-                              ) : (
-                                <Button className="flex-1" onClick={() => handleUpdateTaskStatus(task.id, 'active')}>
-                                  <Play className="w-4 h-4 mr-2" />
-                                  Start Solo Task
-                                </Button>
-                              )}
-                              {task.location && (
-                                <Button variant="outline" onClick={() => handleNavigate(task.location!.lat, task.location!.lng)}>
-                                  <Navigation className="w-4 h-4" />
-                                </Button>
-                              )}
+                            <div className="w-full flex flex-col gap-3 py-2">
+                              <div className="flex justify-between items-center bg-slate-50 p-2 rounded-lg border border-slate-100">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+                                  <Clock className="w-3.5 h-3.5 text-amber-500" />
+                                  Check-in By
+                                </span>
+                                <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded ${
+                                  task.mustStartBy && task.mustStartBy.toMillis() - Date.now() < 600000 
+                                    ? 'bg-red-100 text-red-600 animate-pulse' 
+                                    : 'bg-white text-slate-700'
+                                }`}>
+                                  {task.mustStartBy ? new Date(task.mustStartBy.toMillis()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--'}
+                                </span>
+                              </div>
+                              <div className="w-full flex gap-2">
+                                {task.squadId ? (
+                                  <div className="flex-1 text-center py-2 bg-amber-50 text-amber-700 font-bold rounded text-xs">
+                                    Recruiting Squad...
+                                  </div>
+                                ) : (
+                                  <Button className="flex-1" onClick={() => handleBeginMission(task)}>
+                                    <Play className="w-4 h-4 mr-2" />
+                                    Start Solo Task
+                                  </Button>
+                                )}
+                                {task.location && (
+                                  <Button variant="outline" onClick={() => handleNavigate(task.location!.lat, task.location!.lng)}>
+                                    <Navigation className="w-4 h-4" />
+                                  </Button>
+                                )}
+                              </div>
                             </div>
                           )}
-                          {task.status === 'active' && (
+                          {task.status === 'in_progress' && (
                             <div className="w-full flex gap-2">
                               <Button className="flex-1 bg-green-600 hover:bg-green-700" onClick={() => {
                                 setSubmittingTask(task);
@@ -2069,7 +2225,7 @@ export default function VolunteerDashboard() {
                               )}
                             </div>
                           )}
-                          {task.status === 'pending_approval' && (
+                          {task.status === 'completed' && (
                             <div className="w-full space-y-2">
                               <div className="flex items-center justify-center gap-2 text-amber-600 font-medium bg-amber-50 py-2 rounded">
                                 <Clock className="w-4 h-4" />
@@ -2080,7 +2236,7 @@ export default function VolunteerDashboard() {
                               </p>
                             </div>
                           )}
-                          {task.status === 'completed' && (
+                          {task.status === 'verified' && (
                             <div className="w-full flex items-center justify-center gap-2 text-green-600 font-medium bg-green-50 py-2 rounded">
                               <Trophy className="w-4 h-4" />
                               Task Completed!
@@ -2256,6 +2412,98 @@ export default function VolunteerDashboard() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={isStartProofDialogOpen} onOpenChange={(open) => {
+        setIsStartProofDialogOpen(open);
+        if (!open) stopWebcam();
+      }}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Mission Check-in (Required)</DialogTitle>
+            <DialogDescription>
+              To ensure real-world presence, please take a photo at the task site before starting.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <Label>Arrival Proof</Label>
+              </div>
+              
+              <div 
+                className={`border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-2 transition-colors overflow-hidden relative ${
+                  startProofImage ? 'border-green-500 bg-green-50/10 min-h-[200px]' : 
+                  isWebcamActive ? 'border-primary bg-slate-950 min-h-[300px]' :
+                  'border-slate-200 hover:border-primary/50 hover:bg-slate-50 h-48 cursor-pointer'
+                }`}
+                onClick={() => !startProofImage && !isWebcamActive && startWebcam()}
+              >
+                {startProofImage ? (
+                  <div className="relative w-full h-full min-h-[200px]">
+                    <img src={startProofImage} alt="Start Proof" className="w-full h-full object-cover" />
+                    <Button 
+                      variant="destructive" 
+                      size="icon" 
+                      className="absolute top-2 right-2 h-8 w-8 rounded-full shadow-lg"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setStartProofImage(null);
+                      }}
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </div>
+                ) : isWebcamActive ? (
+                  <div className="relative w-full h-full flex flex-col items-center group">
+                    <video 
+                      ref={videoRef} 
+                      autoPlay 
+                      playsInline 
+                      className="w-full h-full bg-black object-cover"
+                    />
+                    <div className="absolute bottom-4 left-0 right-0 flex justify-center">
+                      <Button 
+                        size="icon" 
+                        className="h-14 w-14 rounded-full bg-white hover:bg-slate-100 text-slate-900 border-4 border-primary/20 shadow-xl group-active:scale-95 transition-all"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (videoRef.current) {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = videoRef.current.videoWidth;
+                            canvas.height = videoRef.current.videoHeight;
+                            const ctx = canvas.getContext('2d');
+                            if (ctx) {
+                              ctx.drawImage(videoRef.current, 0, 0);
+                              setStartProofImage(canvas.toDataURL('image/jpeg'));
+                              stopWebcam();
+                            }
+                          }
+                        }}
+                      >
+                        <div className="w-8 h-8 rounded-full border-2 border-slate-900" />
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <Camera className="w-8 h-8 text-slate-300" />
+                    <span className="text-sm text-slate-400 text-center px-4">Tap to use camera & verify arrival</span>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button 
+              className="w-full h-12 text-base font-bold" 
+              onClick={confirmBeginMission}
+              disabled={!startProofImage || isStartCheckingIn}
+            >
+              {isStartCheckingIn ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Start Working Now
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={isSubmitDialogOpen} onOpenChange={setIsSubmitDialogOpen}>
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>

@@ -17,6 +17,9 @@
           }
         },
         "impactPoints": { "type": "number" },
+        "reliabilityScore": { "type": "number", "description": "0-100 score based on completion vs abandonment" },
+        "completedTasks": { "type": "number" },
+        "abandonedTasks": { "type": "number" },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "displayName", "email", "role", "impactPoints", "createdAt"]
@@ -30,7 +33,7 @@
         "ngoName": { "type": "string" },
         "title": { "type": "string" },
         "description": { "type": "string" },
-        "status": { "type": "string", "enum": ["open", "active", "completed"] },
+        "status": { "type": "string", "enum": ["open", "accepted", "in_progress", "completed", "verified", "expired"] },
         "urgency": { "type": "string", "enum": ["Immediate", "Soon", "Planned"] },
         "priority": { "type": "string", "enum": ["High", "Medium", "Low"] },
         "category": { "type": "string", "enum": ["Vital", "Essential", "Stabilizing"] },
@@ -51,6 +54,14 @@
             "checklist": { "type": "array", "items": { "type": "string" } }
           }
         },
+        "acceptedAt": { "type": "string", "format": "date-time" },
+        "mustStartBy": { "type": "string", "format": "date-time" },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "startProof": { "type": "string", "description": "Base64 image or URL" },
+        "completedAt": { "type": "string", "format": "date-time" },
+        "completionProof": { "type": "string", "description": "Base64 image or URL" },
+        "rejectedReason": { "type": "string" },
+        "assignedVolunteerId": { "type": "string" },
         "currentRadius": { "type": "number" },
         "timerExpiresAt": { "type": "string", "format": "date-time" },
         "squadId": { "type": "string" },

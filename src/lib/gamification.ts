@@ -43,18 +43,13 @@ export async function awardPointsAndBadges(volunteerId: string, task: any, isLea
     console.log(`Score Breakdown: Priority(${priorityPoints}) + Reach(${reachPoints}) + Complexity(${complexityPoints}) = ${pointsToAdd}`);
     console.log(`Current points: ${currentPoints}, New total: ${newPoints}`);
     
-    // Fetch ALL tasks for this volunteer to count accurately
-    const tasksQuery = query(
-      collection(db, 'tasks'),
-      where('volunteerId', '==', volunteerId)
-    );
-    const tasksSnap = await getDocs(tasksQuery);
-    const completedTasks = tasksSnap.docs
-      .map(doc => doc.data())
-      .filter(t => t.status === 'completed');
-    const completedTasksCount = completedTasks.length;
+    // Fetch ALL tasks for this volunteer to calculate reliability accurately
+    const completedTasksCount = (volunteerData.completedTasks || 0) + 1;
+    const abandonedTasksCount = volunteerData.abandonedTasks || 0;
+    const totalEngagements = completedTasksCount + abandonedTasksCount;
+    const reliabilityScore = totalEngagements > 0 ? Math.round((completedTasksCount / totalEngagements) * 100) : 100;
     
-    console.log(`Completed tasks count: ${completedTasksCount}`);
+    console.log(`Relibility Stats: Completed(${completedTasksCount}), Abandoned(${abandonedTasksCount}), Score(${reliabilityScore})`);
     
     const currentBadges = volunteerData.earnedBadges || [];
     const newBadges = [...currentBadges];
@@ -76,7 +71,17 @@ export async function awardPointsAndBadges(volunteerId: string, task: any, isLea
       });
     }
     
-    const highPriorityCompleted = completedTasks.filter(t => t.priority === 'High').length;
+    // For checking high priority, we still need to query or track separately.
+    // For simplicity, we'll use the existing count logic for specific metrics
+    const tasksQuery = query(
+      collection(db, 'tasks'),
+      where('assignedVolunteerId', '==', volunteerId),
+      where('status', '==', 'verified')
+    );
+    const tasksSnap = await getDocs(tasksQuery);
+    const verifiedTasks = tasksSnap.docs.map(doc => doc.data());
+    
+    const highPriorityCompleted = verifiedTasks.filter(t => t.priority === 'High').length + (task.priority === 'High' ? 1 : 0);
     if (highPriorityCompleted >= 3 && !newBadges.find(b => b.id === 'high_impact')) {
       newBadges.push({ 
         id: 'high_impact', 
@@ -87,7 +92,8 @@ export async function awardPointsAndBadges(volunteerId: string, task: any, isLea
     
     await updateDoc(volunteerRef, {
       impactPoints: newPoints,
-      totalPoints: newPoints, // Maintain legacy for now
+      completedTasks: completedTasksCount,
+      reliabilityScore: reliabilityScore,
       earnedBadges: newBadges,
       updatedAt: serverTimestamp()
     });
@@ -98,5 +104,31 @@ export async function awardPointsAndBadges(volunteerId: string, task: any, isLea
   } catch (error) {
     console.error("Error awarding points and badges:", error);
     throw error;
+  }
+}
+
+export async function trackTaskAbandonment(volunteerId: string) {
+  console.log(`Tracking abandonment for volunteer: ${volunteerId}`);
+  try {
+    const volunteerRef = doc(db, 'users', volunteerId);
+    const volunteerSnap = await getDoc(volunteerRef);
+    
+    if (!volunteerSnap.exists()) return;
+    
+    const volunteerData = volunteerSnap.data();
+    const completedTasksCount = volunteerData.completedTasks || 0;
+    const abandonedTasksCount = (volunteerData.abandonedTasks || 0) + 1;
+    const totalEngagements = completedTasksCount + abandonedTasksCount;
+    const reliabilityScore = totalEngagements > 0 ? Math.round((completedTasksCount / totalEngagements) * 100) : 0;
+    
+    await updateDoc(volunteerRef, {
+      abandonedTasks: abandonedTasksCount,
+      reliabilityScore: reliabilityScore,
+      updatedAt: serverTimestamp()
+    });
+    
+    console.log(`Abandoned task recorded. New reliability score: ${reliabilityScore}%`);
+  } catch (error) {
+    console.error("Error tracking abandonment:", error);
   }
 }
