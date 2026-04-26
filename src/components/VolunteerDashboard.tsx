@@ -90,8 +90,8 @@ import { createCalendarEvent } from '@/src/services/googleCalendarService';
 let aiInstance: GoogleGenAI | null = null;
 const getAI = () => {
   const key = process.env.GEMINI_API_KEY;
-  if (!key) {
-    throw new Error("GEMINI_API_KEY is not defined. Please set it in your environment variables.");
+  if (!key || key === "" || key === "undefined" || key === "null") {
+    throw new Error("GEMINI_API_KEY is not defined. Please set it in your AI Studio project settings under 'Secrets' or provide it in your environment.");
   }
   if (!aiInstance) {
     aiInstance = new GoogleGenAI({ apiKey: key });

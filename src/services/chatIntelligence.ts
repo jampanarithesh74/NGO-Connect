@@ -3,8 +3,8 @@ import { GoogleGenAI } from "@google/genai";
 let aiInstance: GoogleGenAI | null = null;
 const getAI = () => {
   const key = process.env.GEMINI_API_KEY;
-  if (!key) {
-    throw new Error("GEMINI_API_KEY is not defined. Please check your environment variables.");
+  if (!key || key === "undefined" || key === "null") {
+    throw new Error("GEMINI_API_KEY is not defined. Please check project Secrets.");
   }
   if (!aiInstance) {
     aiInstance = new GoogleGenAI({ apiKey: key });
