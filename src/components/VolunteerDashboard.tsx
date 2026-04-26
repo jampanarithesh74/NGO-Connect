@@ -86,12 +86,12 @@ import { ChatBot } from './ChatBot';
 import MapComponent from './MapComponent';
 import { createCalendarEvent } from '@/src/services/googleCalendarService';
 
-// Lazy initialization for Gemini AI to prevent crash if key is missing
+// Lazy initialization for Gemini AI
 let aiInstance: GoogleGenAI | null = null;
 const getAI = () => {
   const key = process.env.GEMINI_API_KEY;
-  if (!key || key === "" || key === "undefined" || key === "null") {
-    throw new Error("GEMINI_API_KEY is not defined. Please set it in your AI Studio project settings under 'Secrets' or provide it in your environment.");
+  if (!key) {
+    throw new Error("GEMINI_API_KEY is not defined.");
   }
   if (!aiInstance) {
     aiInstance = new GoogleGenAI({ apiKey: key });
@@ -791,7 +791,7 @@ export default function VolunteerDashboard() {
       const ai = getAI();
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: { parts: [{ text: prompt }] },
+        contents: prompt,
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -801,7 +801,7 @@ export default function VolunteerDashboard() {
         }
       });
 
-      const responseText = response.text || "[]";
+      const responseText = response.text;
       let checklist: string[] = [];
       try {
         // Try direct parse
@@ -1159,10 +1159,7 @@ export default function VolunteerDashboard() {
     setActiveSection('matched');
     
     try {
-      const ai = getAI();
-      const model = ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `
+      const prompt = `
           Match the following volunteer skills with the list of available tasks.
           Volunteer Skills: ${userSkills.join(', ')}
           
@@ -1171,11 +1168,15 @@ export default function VolunteerDashboard() {
           
           Return a JSON array of task IDs that are a good match for the volunteer's skills.
           Only return the array of IDs.
-        `,
+        `;
+
+      const ai = getAI();
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
       });
-      
-      const response = await model;
-      const text = response.text || "";
+
+      const text = response.text;
       const jsonMatch = text.match(/\[.*\]/s);
       
       if (jsonMatch) {

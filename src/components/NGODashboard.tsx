@@ -58,12 +58,12 @@ import { Textarea } from "@/components/ui/textarea";
 
 import MapComponent from './MapComponent';
 
-// Lazy initialization for Gemini AI to prevent crash if key is missing
+// Lazy initialization for Gemini AI
 let aiInstance: GoogleGenAI | null = null;
 const getAI = () => {
   const key = process.env.GEMINI_API_KEY;
-  if (!key || key === "" || key === "undefined" || key === "null") {
-    throw new Error("GEMINI_API_KEY is not defined. Please set it in your AI Studio project settings under 'Secrets' or provide it in your environment.");
+  if (!key) {
+    throw new Error("GEMINI_API_KEY is not defined.");
   }
   if (!aiInstance) {
     aiInstance = new GoogleGenAI({ apiKey: key });
@@ -591,50 +591,13 @@ export default function NGODashboard() {
       const ai = getAI();
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: { parts },
+        contents: parts,
         config: {
           responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              tasks: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    title: { type: "string" },
-                    description: { type: "string" },
-                    priority: { type: "string", enum: ["High", "Medium", "Low"] },
-                    urgency: { type: "string", enum: ["Immediate", "Soon", "Planned"] },
-                    category: { type: "string", enum: ["Vital", "Essential", "Stabilizing"] },
-                    taskType: { type: "string", enum: ["Health", "Food", "Logistics", "Education", "Rescue", "Shelter", "Environment", "Others"] },
-                    deadline: { type: "string" },
-                    complexity: { type: "string", enum: ["Simple", "Standard", "Complex"] },
-                    beneficiaries: { type: "number" },
-                    recommendedTeamSize: { type: "number" },
-                    minMembers: { type: "number" },
-                    checklist: { type: "array", items: { type: "string" } }
-                  },
-                  required: ["title", "description", "priority", "urgency", "category", "taskType", "deadline", "complexity", "beneficiaries", "recommendedTeamSize", "minMembers", "checklist"]
-                }
-              },
-              detectedLocation: {
-                type: "object",
-                properties: {
-                  area: { type: "string" },
-                  landmark: { type: "string" },
-                  district: { type: "string" },
-                  state: { type: "string" },
-                  search_query: { type: "string" }
-                }
-              }
-            },
-            required: ["tasks", "detectedLocation"]
-          }
         }
       });
-      
-      const text = response.text || "";
+
+      const text = response.text;
       
       // Safety: Extract JSON using robust matching
       let jsonData: any = null;

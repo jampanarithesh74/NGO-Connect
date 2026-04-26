@@ -1,15 +1,11 @@
 import { GoogleGenAI } from "@google/genai";
 
-let aiInstance: GoogleGenAI | null = null;
 const getAI = () => {
   const key = process.env.GEMINI_API_KEY;
-  if (!key || key === "undefined" || key === "null") {
-    throw new Error("GEMINI_API_KEY is not defined. Please check project Secrets.");
+  if (!key) {
+    throw new Error("GEMINI_API_KEY is not defined.");
   }
-  if (!aiInstance) {
-    aiInstance = new GoogleGenAI({ apiKey: key });
-  }
-  return aiInstance;
+  return new GoogleGenAI({ apiKey: key });
 };
 
 export interface ChatMessage {
@@ -27,7 +23,6 @@ export const getChatIntelligence = async (
 ) => {
   try {
     const ai = getAI();
-    
     const systemInstruction = `
       You are "Mission Control" for KarunaSync. 
       CRITICAL: Use the EXACT format below. Be extremely brief. No preambles. No conversational filler.
@@ -58,20 +53,6 @@ export const getChatIntelligence = async (
       Available Intel: ${context?.tasks?.map(t => t.title).join(', ') || 'N/A'}
     `;
 
-    const chat = ai.chats.create({
-      model: "gemini-3-flash-preview",
-      config: {
-        systemInstruction,
-      }
-    });
-
-    // Send the history first, then the latest message
-    // Note: In a real app we'd maintain the chat object, but for simplicity here we'll send the prompt
-    // and let Gemini handle the logic. 
-    
-    // We'll just use generateContent for this simple stateless implementation or 
-    // we could persist the chat instance if needed.
-    
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: messages.map(m => ({
@@ -86,9 +67,6 @@ export const getChatIntelligence = async (
     return response.text;
   } catch (error) {
     console.error("Chat Intelligence Error:", error);
-    if (error instanceof Error && error.message.includes("GEMINI_API_KEY")) {
-      return "Critical: Gemini API Key missing. Please configure it in Settings.";
-    }
     return "I'm having trouble connecting to Mission Control. Please try again in a moment.";
   }
 };
