@@ -588,16 +588,18 @@ export default function NGODashboard() {
         parts.push(fileData);
       }
 
-      const ai = getAI();
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: parts,
-        config: {
-          responseMimeType: "application/json",
-        }
+      const serverResponse = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, fileData })
       });
 
-      const text = response.text;
+      if (!serverResponse.ok) {
+        const errorData = await serverResponse.json();
+        throw new Error(errorData.error || "Server failed to process AI analysis.");
+      }
+
+      const { result: text } = await serverResponse.json();
       
       // Safety: Extract JSON using robust matching
       let jsonData: any = null;
