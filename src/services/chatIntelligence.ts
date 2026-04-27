@@ -45,14 +45,19 @@ export const getChatIntelligence = async (
       Available Intel: ${context?.tasks?.map(t => t.title).join(', ') || 'N/A'}
     `;
 
+    // Convert messages to the SDK format, ensuring it starts with a user message
+    const contents = messages.map(m => ({
+      role: m.role === 'model' ? 'model' : 'user',
+      parts: [{ text: m.text }]
+    }));
+
     const response = await ai.models.generateContent({
       model: AI_MODEL_NAME,
-      contents: messages.map(m => ({
-        role: m.role,
-        parts: [{ text: m.text }]
-      })),
+      contents,
       config: {
-        systemInstruction,
+        systemInstruction: {
+          parts: [{ text: systemInstruction }]
+        },
       }
     });
 

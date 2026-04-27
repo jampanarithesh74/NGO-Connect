@@ -571,7 +571,12 @@ export default function NGODashboard() {
 
       const parts: any[] = [{ text: prompt }];
       if (fileData) {
-        parts.push(fileData);
+        parts.push({
+          inlineData: {
+            data: fileData.data,
+            mimeType: fileData.mimeType
+          }
+        });
       }
 
       const ai = getAI();
