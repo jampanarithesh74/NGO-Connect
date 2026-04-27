@@ -45,7 +45,7 @@ export const getChatIntelligence = async (
       Available Intel: ${context?.tasks?.map(t => t.title).join(', ') || 'N/A'}
     `;
 
-    // Convert messages to the SDK format, ensuring it starts with a user message
+    // Convert messages to the SDK format
     const contents = messages.map(m => ({
       role: m.role === 'model' ? 'model' : 'user',
       parts: [{ text: m.text }]
@@ -55,9 +55,7 @@ export const getChatIntelligence = async (
       model: AI_MODEL_NAME,
       contents,
       config: {
-        systemInstruction: {
-          parts: [{ text: systemInstruction }]
-        },
+        systemInstruction,
       }
     });
 

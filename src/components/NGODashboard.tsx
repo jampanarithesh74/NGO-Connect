@@ -571,18 +571,13 @@ export default function NGODashboard() {
 
       const parts: any[] = [{ text: prompt }];
       if (fileData) {
-        parts.push({
-          inlineData: {
-            data: fileData.data,
-            mimeType: fileData.mimeType
-          }
-        });
+        parts.push(fileData);
       }
 
       const ai = getAI();
       const response = await ai.models.generateContent({
         model: AI_MODEL_NAME,
-        contents: [{ role: 'user', parts }],
+        contents: { parts },
         config: {
           responseMimeType: "application/json",
         }

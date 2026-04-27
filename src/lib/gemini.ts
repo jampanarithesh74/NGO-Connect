@@ -10,7 +10,7 @@ export const generateTaskDetails = async (title: string, description: string) =>
 
     const response = await ai.models.generateContent({
       model: AI_MODEL_NAME,
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      contents: prompt,
       config: {
         responseMimeType: "application/json",
         responseSchema: {

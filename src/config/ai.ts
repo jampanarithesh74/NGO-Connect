@@ -1,22 +1,27 @@
 import { GoogleGenAI } from "@google/genai";
 
-// TEMPORARY HACKATHON FIX: Hardcoded API Key
-// Replace the empty string with your valid Gemini API Key if the environment variable fails
+// TEMPORARY HACKATHON FIX: Direct API Key
+// In Vite/Firebase Hosting, environment variables are baked in at build time.
 const API_KEY = process.env.GEMINI_API_KEY || "";
 
 let aiInstance: GoogleGenAI | null = null;
 
 export const getAI = () => {
-  if (!API_KEY || API_KEY === "" || API_KEY === "undefined") {
-    console.warn("GEMINI_API_KEY is not defined. Features will fail until a key is provided.");
-    // If you are in a hurry for the hackathon, you can literally paste your key here:
-    // return new GoogleGenAI({ apiKey: "YOUR_PASTED_KEY_HERE" });
-  }
+  // --- HACKATHON OVERRIDE ---
+  // If you see "API Key Missing" errors in your Firebase deployment, 
+  // paste your key here and it will work 100%:
+  const HACKATHON_KEY = "AIzaSyCpN6rhaUs137mYkQIsnqqdAaVnTG2S9aw"; 
+  // ---------------------------
+
+  const finalKey = API_KEY || HACKATHON_KEY;
   
   if (!aiInstance) {
-    aiInstance = new GoogleGenAI({ apiKey: API_KEY });
+    if (!finalKey) {
+      console.error("CRITICAL: No Gemini API Key found. AI features will fail.");
+    }
+    aiInstance = new GoogleGenAI({ apiKey: finalKey });
   }
   return aiInstance;
 };
 
-export const AI_MODEL_NAME = "gemini-3-flash-preview"; // Recommended model for this environment
+export const AI_MODEL_NAME = "gemini-3-flash-preview";

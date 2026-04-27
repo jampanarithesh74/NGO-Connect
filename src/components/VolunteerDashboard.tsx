@@ -779,7 +779,7 @@ export default function VolunteerDashboard() {
       const ai = getAI();
       const response = await ai.models.generateContent({
         model: AI_MODEL_NAME,
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        contents: prompt,
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -1161,7 +1161,7 @@ export default function VolunteerDashboard() {
       const ai = getAI();
       const response = await ai.models.generateContent({
         model: AI_MODEL_NAME,
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        contents: prompt,
       });
 
       const text = response.text;
