@@ -17,7 +17,8 @@ import {
   limit
 } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from '@/src/lib/firestoreUtils';
-import { GoogleGenAI, Type } from "@google/genai";
+import { getAI, AI_MODEL_NAME } from '@/src/config/ai';
+import { Type } from "@google/genai";
 import { 
   LayoutDashboard, 
   Search, 
@@ -85,19 +86,6 @@ import { awardPointsAndBadges, trackTaskAbandonment } from '@/src/lib/gamificati
 import { ChatBot } from './ChatBot';
 import MapComponent from './MapComponent';
 import { createCalendarEvent } from '@/src/services/googleCalendarService';
-
-// Lazy initialization for Gemini AI
-let aiInstance: GoogleGenAI | null = null;
-const getAI = () => {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) {
-    throw new Error("GEMINI_API_KEY is not defined.");
-  }
-  if (!aiInstance) {
-    aiInstance = new GoogleGenAI({ apiKey: key });
-  }
-  return aiInstance;
-};
 
 type Section = 'home' | 'find' | 'matched' | 'accepted' | 'progress' | 'contributions' | 'leaderboard' | 'badges' | 'map' | 'profile' | 'squad';
 
@@ -790,8 +778,8 @@ export default function VolunteerDashboard() {
 
       const ai = getAI();
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
+        model: AI_MODEL_NAME,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: {
           responseMimeType: "application/json",
           responseSchema: {
@@ -1172,8 +1160,8 @@ export default function VolunteerDashboard() {
 
       const ai = getAI();
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
+        model: AI_MODEL_NAME,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
       });
 
       const text = response.text;

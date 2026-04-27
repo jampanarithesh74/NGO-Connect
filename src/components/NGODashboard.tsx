@@ -39,7 +39,7 @@ import { ChatBot } from './ChatBot';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI, Type } from "@google/genai";
+import { getAI, AI_MODEL_NAME } from '@/src/config/ai';
 import { 
   DropdownMenu,
   DropdownMenuContent,
@@ -55,21 +55,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-
 import MapComponent from './MapComponent';
-
-// Lazy initialization for Gemini AI
-let aiInstance: GoogleGenAI | null = null;
-const getAI = () => {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) {
-    throw new Error("GEMINI_API_KEY is not defined.");
-  }
-  if (!aiInstance) {
-    aiInstance = new GoogleGenAI({ apiKey: key });
-  }
-  return aiInstance;
-};
 
 type Section = 'home' | 'upload' | 'previous' | 'progress' | 'completed' | 'verifications' | 'stalled';
 
@@ -590,8 +576,8 @@ export default function NGODashboard() {
 
       const ai = getAI();
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: parts,
+        model: AI_MODEL_NAME,
+        contents: [{ role: 'user', parts }],
         config: {
           responseMimeType: "application/json",
         }

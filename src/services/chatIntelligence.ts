@@ -1,12 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
-
-const getAI = () => {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) {
-    throw new Error("GEMINI_API_KEY is not defined.");
-  }
-  return new GoogleGenAI({ apiKey: key });
-};
+import { getAI, AI_MODEL_NAME } from "../config/ai";
 
 export interface ChatMessage {
   role: 'user' | 'model';
@@ -54,7 +46,7 @@ export const getChatIntelligence = async (
     `;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: AI_MODEL_NAME,
       contents: messages.map(m => ({
         role: m.role,
         parts: [{ text: m.text }]

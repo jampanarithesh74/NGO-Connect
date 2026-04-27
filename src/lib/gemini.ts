@@ -1,12 +1,5 @@
-import { GoogleGenAI, Type } from "@google/genai";
-
-const getAI = () => {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) {
-    throw new Error("GEMINI_API_KEY is not defined.");
-  }
-  return new GoogleGenAI({ apiKey: key });
-};
+import { Type } from "@google/genai";
+import { getAI, AI_MODEL_NAME } from "../config/ai";
 
 export const generateTaskDetails = async (title: string, description: string) => {
   try {
@@ -16,8 +9,8 @@ export const generateTaskDetails = async (title: string, description: string) =>
     Task Description: ${description}`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
+      model: AI_MODEL_NAME,
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: {
         responseMimeType: "application/json",
         responseSchema: {
