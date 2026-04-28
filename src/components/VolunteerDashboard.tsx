@@ -10,7 +10,7 @@ import {
   doc, 
   getDoc,
   addDoc,
-  updateDoc, 
+  updateDoc,
   serverTimestamp,
   Timestamp,
   where,

@@ -6,12 +6,13 @@ let aiInstance: GoogleGenAI | null = null;
 
 export const getAI = () => {
   // --- SECURE CONFIGURATION ---
-  // Do NOT hardcode your key here. 
-  // Instead, go to Settings -> Secrets and add GEMINI_API_KEY.
-  const finalKey = process.env.GEMINI_API_KEY || process.env.MY_GEMINI_API_KEY;
+  // 1. Go to Settings -> Secrets
+  // 2. Add a secret named: VITE_MY_GEMINI_API_KEY
+  // 3. Paste your API key there.
+  const finalKey = import.meta.env.VITE_MY_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
 
   if (!finalKey || finalKey === "" || finalKey === "undefined") {
-    console.error("MISSION CONTROL: API Key Missing. Please add 'MY_GEMINI_API_KEY' to your project Secrets (Settings > Secrets).");
+    console.error("MISSION CONTROL: API Key Missing. Please add 'VITE_MY_GEMINI_API_KEY' to your project Secrets (Settings > Secrets).");
   }
   
   if (!aiInstance) {
