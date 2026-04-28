@@ -2,21 +2,24 @@ import { GoogleGenAI } from "@google/genai";
 
 // TEMPORARY HACKATHON FIX: Direct API Key
 // In Vite/Firebase Hosting, environment variables are baked in at build time.
+const API_KEY = process.env.GEMINI_API_KEY || "";
+
 let aiInstance: GoogleGenAI | null = null;
 
 export const getAI = () => {
-  // --- SECURE CONFIGURATION ---
-  // 1. Go to Settings -> Secrets
-  // 2. Add a secret named: VITE_MY_GEMINI_API_KEY
-  // 3. Paste your API key there.
-  const finalKey = import.meta.env.VITE_MY_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+  // --- HACKATHON OVERRIDE ---
+  // If you see "API Key Missing" errors in your Firebase deployment, 
+  // paste your key here and it will work 100%:
+  const HACKATHON_KEY = "AIzaSyCpN6rhaUs137mYkQIsnqqdAaVnTG2S9aw"; 
+  // ---------------------------
 
-  if (!finalKey || finalKey === "" || finalKey === "undefined") {
-    console.error("MISSION CONTROL: API Key Missing. Please add 'VITE_MY_GEMINI_API_KEY' to your project Secrets (Settings > Secrets).");
-  }
+  const finalKey = API_KEY || HACKATHON_KEY;
   
   if (!aiInstance) {
-    aiInstance = new GoogleGenAI({ apiKey: finalKey || "" });
+    if (!finalKey) {
+      console.error("CRITICAL: No Gemini API Key found. AI features will fail.");
+    }
+    aiInstance = new GoogleGenAI({ apiKey: finalKey });
   }
   return aiInstance;
 };
